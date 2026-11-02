@@ -19,6 +19,7 @@ x-tools: &tools
 
 services:
   local-llm:
+    container_name: CatalogFlow_local-llm
     image: ollama/ollama:${OLLAMA_VERSION:-0.32.5}
     environment:
       OLLAMA_HOST: 0.0.0.0:11434
@@ -39,6 +40,7 @@ services:
       start_period: 10s
 
   mineru:
+    container_name: CatalogFlow_mineru
     image: guhring-parser-mineru-cpu:${MINERU_VERSION:-3.4.5}
     build:
       context: ./mineru
@@ -80,6 +82,7 @@ services:
     restart: unless-stopped
 
   pipeline-ui:
+    container_name: CatalogFlow_pipeline-ui
     <<: *tools
     depends_on:
       local-llm:
@@ -108,6 +111,7 @@ services:
     restart: unless-stopped
 
   tools:
+    container_name: CatalogFlow_tools
     <<: *tools
     profiles: [tools]
     environment:
@@ -116,6 +120,7 @@ services:
     restart: "no"
 
   catalog-etl:
+    container_name: CatalogFlow_catalog-etl
     <<: *tools
     profiles: [etl]
     entrypoint: ["python", "/scripts/catalog_etl.py"]

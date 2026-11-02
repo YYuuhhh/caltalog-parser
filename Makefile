@@ -4,9 +4,9 @@ LEGACY_COMPOSE := docker compose -f docker-compose.yml -f docker-compose.legacy.
 TOOLS_IMAGE := guhring-parser-tools:3
 MODEL_RAM ?= 32
 WORK_REVIEW_WORKER ?= 0
-TOOLS_RUN := $(COMPOSE) run --rm --no-deps tools
-OPENAI_RUN := $(LEGACY_COMPOSE) run --rm --no-deps openai-processor
-ETL_RUN := $(COMPOSE) run --rm --no-deps catalog-etl
+TOOLS_RUN := $(COMPOSE) run --rm --no-deps --name CatalogFlow_tools_$$(date +%s%N) tools
+OPENAI_RUN := $(LEGACY_COMPOSE) run --rm --no-deps --name CatalogFlow_openai-processor_$$(date +%s%N) openai-processor
+ETL_RUN := $(COMPOSE) run --rm --no-deps --name CatalogFlow_catalog-etl_$$(date +%s%N) catalog-etl
 CPU_PROFILES := cpu,elasticsearch,metadata-mysql,tei-cpu
 GPU_PROFILES := gpu,elasticsearch,metadata-mysql,tei-cpu
 CATALOG_MANIFEST ?= /catalogs/manifests/guhring-production.yaml
@@ -82,7 +82,7 @@ parse-test-openai-structure: parse-test-openai
 	$(MAKE) structure-reviewed
 
 gpu-parse-test: prepare-vlm-test
-	COMPOSE_PROFILES=$(GPU_PROFILES) MINERU_BACKEND=vlm-transformers MINERU_DEVICE_MODE=cuda $(LEGACY_COMPOSE) run --rm --no-deps tools python /scripts/ragflow_e2e.py /catalogs/test/guhring_vlm_test.pdf
+	COMPOSE_PROFILES=$(GPU_PROFILES) MINERU_BACKEND=vlm-transformers MINERU_DEVICE_MODE=cuda $(LEGACY_COMPOSE) run --rm --no-deps --name CatalogFlow_tools_$$(date +%s%N) tools python /scripts/ragflow_e2e.py /catalogs/test/guhring_vlm_test.pdf
 	$(TOOLS_RUN) python /scripts/export_raw.py
 	$(TOOLS_RUN) python /scripts/validate_parsing.py
 	$(TOOLS_RUN) python /scripts/verify_vlm_accuracy.py
@@ -160,7 +160,7 @@ gpu-start:
 
 backup:
 	mkdir -p backups
-	docker run --rm -v "$(CURDIR):/project:ro" -v "$(CURDIR)/backups:/backup" alpine:3.22.1 sh -ec 'tar -czf "/backup/guhring-parser-$$(date -u +%Y%m%dT%H%M%SZ).tar.gz" -C /project data parsed logs catalogs schemas mappings'
+	docker run --rm --name CatalogFlow_backup_$$(date +%s%N) -v "$(CURDIR):/project:ro" -v "$(CURDIR)/backups:/backup" alpine:3.22.1 sh -ec 'tar -czf "/backup/guhring-parser-$$(date -u +%Y%m%dT%H%M%SZ).tar.gz" -C /project data parsed logs catalogs schemas mappings'
 
 register-catalog: ensure-tools
 	$(TOOLS_RUN) python /scripts/catalog_registry.py register --manifest $(CATALOG_MANIFEST) $(REGISTRY_ARGS)

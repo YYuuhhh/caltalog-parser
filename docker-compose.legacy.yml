@@ -28,6 +28,7 @@ x-mineru-healthcheck: &mineru-healthcheck
 
 services:
   init-permissions:
+    container_name: CatalogFlow_init-permissions
     image: alpine:3.22.1
     user: "0:0"
     environment:
@@ -54,6 +55,7 @@ services:
     network_mode: none
 
   es01:
+    container_name: CatalogFlow_es01
     image: elasticsearch:8.11.3
     profiles: ["elasticsearch"]
     depends_on:
@@ -89,6 +91,7 @@ services:
     restart: unless-stopped
 
   mysql:
+    container_name: CatalogFlow_mysql
     image: mysql:8.0.40
     profiles: ["metadata-mysql"]
     depends_on:
@@ -117,6 +120,7 @@ services:
     restart: unless-stopped
 
   minio:
+    container_name: CatalogFlow_minio
     image: pgsty/silo:RELEASE.2026-08-06T00-00-00Z
     depends_on:
       init-permissions:
@@ -139,6 +143,7 @@ services:
     restart: unless-stopped
 
   redis:
+    container_name: CatalogFlow_redis
     image: valkey/valkey:8
     depends_on:
       init-permissions:
@@ -155,6 +160,7 @@ services:
     restart: unless-stopped
 
   tei:
+    container_name: CatalogFlow_tei
     image: infiniflow/text-embeddings-inference:cpu-1.8
     profiles: ["tei-cpu"]
     command: ["--model-id", "/data/${TEI_MODEL:-BAAI/bge-small-en-v1.5}", "--auto-truncate"]
@@ -170,6 +176,7 @@ services:
     restart: unless-stopped
 
   mineru-gpu:
+    container_name: CatalogFlow_mineru-gpu
     image: guhring-parser-mineru-gpu:${MINERU_VERSION:-3.4.5}
     profiles: ["gpu"]
     build:
@@ -207,6 +214,7 @@ services:
     restart: unless-stopped
 
   mineru-ui:
+    container_name: CatalogFlow_mineru-ui
     image: guhring-parser-mineru-cpu:${MINERU_VERSION:-3.4.5}
     profiles: ["mineru-ui"]
     depends_on:
@@ -229,6 +237,7 @@ services:
     restart: unless-stopped
 
   openai-processor:
+    container_name: CatalogFlow_openai-processor
     image: guhring-parser-tools:3
     profiles: ["openai"]
     build:
@@ -261,6 +270,7 @@ services:
     restart: "no"
 
   ragflow:
+    container_name: CatalogFlow_ragflow
     image: ${RAGFLOW_IMAGE:-infiniflow/ragflow:v0.27.0}
     depends_on:
       es01:

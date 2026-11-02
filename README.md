@@ -19,6 +19,12 @@ Run `make ui` after changing the folder. It is mounted **read-only** at `/catalo
 
 The default stack contains the CPU extractor, the workbench and a local Ollama server. RAGFlow, GPU parsing, Elasticsearch, MySQL, Redis, MinIO and TEI are not needed by this pipeline.
 
+All service containers use the `CatalogFlow_` prefix: `CatalogFlow_mineru`,
+`CatalogFlow_pipeline-ui` and `CatalogFlow_local-llm` in the default stack, and
+`CatalogFlow_large-cpu` on the separate inference server. Optional services and
+temporary jobs launched by Make targets use the same prefix. Compose service
+addresses such as `http://mineru:8000` remain valid.
+
 ### Local CPU review and final validation
 
 New catalogs default to **local vision models for both stage 03 and stage 06**. All local requests force `num_gpu=0`; the local container has no GPU device allocation. Each task has a fresh page/tool context, the original PDF image, a fixed JSON schema and saved model execution evidence. There is no fallback to ChatGPT Work, the Platform API or Ollama cloud. Earlier saved Work runs keep their explicit choices.
@@ -171,7 +177,7 @@ NODE_PATH=/tmp/catalog-ui-browser/node_modules node tests/ui_e2e.cjs
 make full-test
 make full-test TEST_ARGS='--source "/catalogs/imports/guhring/GTC_Milling_Cutters 2018.pdf" --first-page 7 --last-page 7'
 # Optional fresh extraction without reusing a cached page (no Work calls):
-docker compose run --rm --no-deps tools python /scripts/local_workbench_probe.py \
+docker compose run --rm --no-deps --name "CatalogFlow_task_$(date +%s%N)" tools python /scripts/local_workbench_probe.py \
   --source '/catalogs/imports/guhring/GTC_Milling_Cutters 2018.pdf' \
   --first-page 7 --last-page 7 --force
 # Explicit opt-in for a full catalog with real Work reviews:
@@ -1393,7 +1399,7 @@ make parse-folder
 Разбор одного файла или диапазона страниц:
 
 ```bash
-docker compose run --rm --no-deps tools \
+docker compose run --rm --no-deps --name "CatalogFlow_task_$(date +%s%N)" tools \
   python /scripts/parse_catalogs.py /catalogs/input/example.pdf \
   --start-page 0 \
   --end-page 9 \
@@ -1470,7 +1476,7 @@ parser
 Свой путь ввода/вывода:
 
 ```bash
-docker compose run --rm --no-deps tools \
+docker compose run --rm --no-deps --name "CatalogFlow_task_$(date +%s%N)" tools \
   python /scripts/export_raw.py \
   --input-root /parsed \
   --output /parsed/master_raw.xlsx
@@ -1512,7 +1518,7 @@ processing_time
 Подозрительные числа по умолчанию только попадают в отчёт. Чтобы сделать их ошибкой:
 
 ```bash
-docker compose run --rm --no-deps tools \
+docker compose run --rm --no-deps --name "CatalogFlow_task_$(date +%s%N)" tools \
   python /scripts/validate_parsing.py --fail-on-suspicious
 ```
 
@@ -1598,13 +1604,13 @@ openai_verification_basis
 Каждый запрос использует Responses API со строгой JSON-схемой и `store: false`. Успешный результат кэшируется по хешу строк, исходной страницы, запрошенной модели, конфигурации, схемы и версии промпта. Точное имя модели из ответа API также записывается в манифест и столбец `openai_model`. Повторный запуск не тратит токены для уже обработанных пакетов. Принудительная новая неизменяемая попытка:
 
 ```bash
-docker compose run --rm --no-deps openai-processor --force
+docker compose run --rm --no-deps --name "CatalogFlow_task_$(date +%s%N)" openai-processor --force
 ```
 
 Обработать конкретный исходный PDF независимо от имени, присвоенного RAGFlow:
 
 ```bash
-docker compose run --rm --no-deps openai-processor \
+docker compose run --rm --no-deps --name "CatalogFlow_task_$(date +%s%N)" openai-processor \
   --source-pdf /catalogs/test/guhring_catalog_test.pdf
 ```
 
@@ -1625,7 +1631,7 @@ CPU остаётся режимом по умолчанию. GPU необяза�
 
 ```bash
 nvidia-smi
-docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu24.04 nvidia-smi
+docker run --rm --name "CatalogFlow_gpu-check_$(date +%s%N)" --gpus all nvidia/cuda:12.8.0-base-ubuntu24.04 nvidia-smi
 ```
 
 ### Сборка и запуск
@@ -1792,7 +1798,7 @@ make full-test
 Пути в `docker-compose.yml` относительные, но созданные контейнеры сохраняют абсолютные пути bind mounts. Перенос папки проекта не обновляет эти пути; команда `restart` также их не меняет. Проверьте сохранённые пути:
 
 ```bash
-docker inspect --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}' guhring-parser-mineru-1
+docker inspect --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}' CatalogFlow_mineru
 ```
 
 Переносите вместе с проектом `.env`, `catalogs/`, `data/`, `parsed/` и `logs/`. Из нового каталога проекта пересоздайте контейнеры, чтобы подключить данные по актуальным путям:
@@ -1909,7 +1915,7 @@ RAGFlow должен показывать `vlm-transformers`, а ответ со
 Проверьте только факт наличия переменной, не выводя сам ключ:
 
 ```bash
-docker compose run --rm --no-deps --entrypoint sh openai-processor \
+docker compose run --rm --no-deps --name "CatalogFlow_task_$(date +%s%N)" --entrypoint sh openai-processor \
   -ec 'test -n "$OPENAI_API_KEY" && echo configured || echo missing'
 ```
 
@@ -2212,7 +2218,7 @@ MINERU_DELETE_OUTPUT=0
 Только настройка dataset/provider без загрузки PDF:
 
 ```bash
-docker compose run --rm --no-deps tools \
+docker compose run --rm --no-deps --name "CatalogFlow_task_$(date +%s%N)" tools \
   python /scripts/ragflow_e2e.py --setup-only
 ```
 

@@ -32,7 +32,7 @@ run_step() {
   return 0
 }
 
-tools=("${compose[@]}" run --rm --no-deps tools)
+tools=("${compose[@]}" run --rm --no-deps --name "CatalogFlow_tools_$run_id" tools)
 run_step compose operational "${compose[@]}" config --quiet
 run_step baseline operational "${tools[@]}" python /scripts/full_test.py baseline --run-id "$run_id"
 run_step health operational "${tools[@]}" python /scripts/full_test.py health
@@ -54,7 +54,7 @@ run_step structure operational "${tools[@]}" "${etl[@]}"
 run_step structure_validate operational "${tools[@]}" "${etl[@]}" --validate-only
 run_step cached_structure operational "${tools[@]}" "${etl[@]}"
 run_step golden quality "${tools[@]}" python /scripts/verify_guhring_test.py --workbook "$parsed_run/master_raw.xlsx" --report "/logs/full-test-runs/$run_id/golden.json"
-openai=("${compose[@]}" run --rm --no-deps openai-processor --input "$parsed_run/master_raw.xlsx" --output-root "/parsed/openai/full-test-runs/$run_id" --selection-manifest /catalogs/manifests/guhring-production.yaml --dry-run)
+openai=("${compose[@]}" run --rm --no-deps --name "CatalogFlow_openai-processor_$run_id" openai-processor --input "$parsed_run/master_raw.xlsx" --output-root "/parsed/openai/full-test-runs/$run_id" --selection-manifest /catalogs/manifests/guhring-production.yaml --dry-run)
 run_step openai_rows_plan operational "${openai[@]}"
 run_step openai_pages_plan operational "${openai[@]}" --mode page_completeness
 run_step restart operational "${compose[@]}" restart

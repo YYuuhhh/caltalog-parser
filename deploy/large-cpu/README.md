@@ -5,6 +5,7 @@ review and final-validation stages. The PDF extractor and workbench remain in th
 main stack. It targets a Linux x86-64 server with Docker Compose. No GPU runtime,
 CUDA/MLX/Vulkan backends, model weights, paid API calls or startup downloads are
 included. A fresh server starts healthy with an empty model list.
+The container is named `CatalogFlow_large-cpu`.
 
 ## Move the prepared container to the server
 
