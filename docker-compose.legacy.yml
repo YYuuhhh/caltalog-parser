@@ -1,0 +1,352 @@
+name: guhring-parser
+
+x-mineru-environment: &mineru-environment
+  MINERU_MODEL_SOURCE: local
+  MINERU_MODEL_REVISION: ${MINERU_MODEL_REVISION:-mineru-3.4.5-pipeline}
+  MINERU_API_OUTPUT_ROOT: /parsed/_api_tasks
+  MINERU_API_TASK_RETENTION_SECONDS: ${MINERU_API_TASK_RETENTION_SECONDS:-3600}
+  MINERU_API_MAX_CONCURRENT_REQUESTS: "1"
+  MINERU_TABLE_MERGE_ENABLE: "0"
+  MINERU_CACHE_SCHEMA: v1
+  MINERU_UPSTREAM_TIMEOUT: ${MINERU_UPSTREAM_TIMEOUT:-7200}
+  PARSED_ROOT: /parsed
+  TZ: ${TZ:-Asia/Yekaterinburg}
+
+x-mineru-volumes: &mineru-volumes
+  - ./catalogs:/catalogs:ro
+  - ./parsed:/parsed
+  - ./logs:/logs
+  - ./scripts:/scripts:ro
+  - ./tests:/tests:ro
+
+x-mineru-healthcheck: &mineru-healthcheck
+  test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+  interval: 15s
+  timeout: 10s
+  retries: 20
+  start_period: 30s
+
+services:
+  init-permissions:
+    image: alpine:3.22.1
+    user: "0:0"
+    environment:
+      LOCAL_UID: ${LOCAL_UID:-1000}
+      LOCAL_GID: ${LOCAL_GID:-1000}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /data/es /data/mysql /data/minio /data/redis /data/tei /data/logs /data/bootstrap /parsed/ragflow-downloads /parsed/openai /parsed/etl /logs/ragflow /logs/etl
+        if [ ! -f /data/bootstrap/.permissions-v1 ]; then
+          chown -R 1000:0 /data/es
+          chmod -R ug+rwX /data/es
+          touch /data/bootstrap/.permissions-v1
+        fi
+        chown 1000:0 /data/es
+        chown "$${LOCAL_UID}:$${LOCAL_GID}" /parsed/etl /logs/etl
+        chmod ug+rwx /data/es /data/mysql /data/minio /data/redis /data/tei /data/logs /data/bootstrap /parsed /parsed/ragflow-downloads /parsed/openai /parsed/etl /logs /logs/ragflow /logs/etl
+    volumes:
+      - ./data/ragflow:/data
+      - ./parsed:/parsed
+      - ./logs:/logs
+    restart: "no"
+    network_mode: none
+
+  es01:
+    image: elasticsearch:8.11.3
+    profiles: ["elasticsearch"]
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+    environment:
+      node.name: es01
+      discovery.type: single-node
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-guhring_es_local}
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      xpack.security.transport.ssl.enabled: "false"
+      bootstrap.memory_lock: "false"
+      ES_JAVA_OPTS: ${ES_JAVA_OPTS:--Xms2g -Xmx2g}
+      cluster.routing.allocation.disk.watermark.low: 5gb
+      cluster.routing.allocation.disk.watermark.high: 3gb
+      cluster.routing.allocation.disk.watermark.flood_stage: 2gb
+      TZ: ${TZ:-Asia/Yekaterinburg}
+    volumes:
+      - ./data/ragflow/es:/usr/share/elasticsearch/data
+    mem_limit: ${ES_MEMORY_LIMIT:-3g}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -u elastic:$${ELASTIC_PASSWORD} 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 30s
+    networks: [parser-internal]
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.0.40
+    profiles: ["metadata-mysql"]
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-guhring_mysql_local}
+      MYSQL_DATABASE: ${MYSQL_DBNAME:-rag_flow}
+      TZ: ${TZ:-Asia/Yekaterinburg}
+    command:
+      - --max_connections=1000
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+      - --max_allowed_packet=1073741824
+      - --binlog_expire_logs_seconds=604800
+    volumes:
+      - ./data/ragflow/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 10s
+      retries: 60
+      start_period: 30s
+    networks: [parser-internal]
+    restart: unless-stopped
+
+  minio:
+    image: pgsty/silo:RELEASE.2026-08-06T00-00-00Z
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+    command: ["server", "--console-address", ":9001", "/data"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-rag_flow}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-guhring_minio_local}
+      TZ: ${TZ:-Asia/Yekaterinburg}
+    volumes:
+      - ./data/ragflow/minio:/data
+    ports:
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+    networks: [parser-internal, parser-edge]
+    restart: unless-stopped
+
+  redis:
+    image: valkey/valkey:8
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+    command: ["valkey-server", "--requirepass", "${REDIS_PASSWORD:-guhring_redis_local}", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
+    volumes:
+      - ./data/ragflow/redis:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "-a", "${REDIS_PASSWORD:-guhring_redis_local}", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+    networks: [parser-internal]
+    restart: unless-stopped
+
+  tei:
+    image: infiniflow/text-embeddings-inference:cpu-1.8
+    profiles: ["tei-cpu"]
+    command: ["--model-id", "/data/${TEI_MODEL:-BAAI/bge-small-en-v1.5}", "--auto-truncate"]
+    volumes:
+      - ./data/ragflow/tei:/root/.cache
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 30s
+    networks: [parser-internal]
+    restart: unless-stopped
+
+  mineru-gpu:
+    image: guhring-parser-mineru-gpu:${MINERU_VERSION:-3.4.5}
+    profiles: ["gpu"]
+    build:
+      context: ./mineru
+      args:
+        MINERU_VERSION: ${MINERU_VERSION:-3.4.5}
+        MINERU_TARGET: gpu
+        MINERU_MODEL_SOURCE: ${MINERU_MODEL_SOURCE:-huggingface}
+        MINERU_MODEL_REVISION: ${MINERU_GPU_MODEL_REVISION:-mineru-3.4.5-vlm-2605}
+    depends_on:
+      init-permissions:
+        condition: service_completed_successfully
+    environment:
+      <<: *mineru-environment
+      MINERU_DEVICE_MODE: cuda
+      MINERU_BACKEND: vlm-engine
+      MINERU_MODEL_REVISION: ${MINERU_GPU_MODEL_REVISION:-mineru-3.4.5-vlm-2605}
+      MINERU_SERVICE: api
+    volumes: *mineru-volumes
+    ports:
+      - "127.0.0.1:${MINERU_API_PORT:-8000}:8000"
+    shm_size: ${MINERU_SHM_SIZE:-4gb}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck: *mineru-healthcheck
+    networks:
+      parser-internal:
+        aliases: [mineru]
+      parser-edge: {}
+    restart: unless-stopped
+
+  mineru-ui:
+    image: guhring-parser-mineru-cpu:${MINERU_VERSION:-3.4.5}
+    profiles: ["mineru-ui"]
+    depends_on:
+      mineru:
+        condition: service_healthy
+        required: false
+      mineru-gpu:
+        condition: service_healthy
+        required: false
+    environment:
+      <<: *mineru-environment
+      MINERU_DEVICE_MODE: ${MINERU_DEVICE_MODE:-cpu}
+      MINERU_SERVICE: gradio
+      # Gradio uses MinerU's asynchronous /tasks protocol directly.
+      MINERU_PUBLIC_API_URL: http://mineru:8001
+    volumes: *mineru-volumes
+    ports:
+      - "127.0.0.1:${MINERU_UI_PORT:-7860}:7860"
+    networks: [parser-internal, parser-edge]
+    restart: unless-stopped
+
+  openai-processor:
+    image: guhring-parser-tools:3
+    profiles: ["openai"]
+    build:
+      context: ./scripts
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    entrypoint: ["python", "/scripts/openai_process.py"]
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_BASE: ${OPENAI_API_BASE:-https://api.openai.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-sol}
+      OPENAI_ESCALATION_MODEL: ${OPENAI_ESCALATION_MODEL:-}
+      OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-medium}
+      OPENAI_BATCH_ROWS: ${OPENAI_BATCH_ROWS:-50}
+      OPENAI_TIMEOUT_SECONDS: ${OPENAI_TIMEOUT_SECONDS:-600}
+      OPENAI_MAX_RETRIES: ${OPENAI_MAX_RETRIES:-4}
+      OPENAI_VALIDATION_RETRIES: ${OPENAI_VALIDATION_RETRIES:-2}
+      OPENAI_MAX_OUTPUT_TOKENS: ${OPENAI_MAX_OUTPUT_TOKENS:-32000}
+      OPENAI_INCLUDE_SOURCE_PAGE: ${OPENAI_INCLUDE_SOURCE_PAGE:-true}
+      OPENAI_SELECTION_MANIFEST: ${OPENAI_SELECTION_MANIFEST:-/catalogs/manifests/guhring-production.yaml}
+      OPENAI_ORG_ID: ${OPENAI_ORG_ID:-}
+      OPENAI_PROJECT_ID: ${OPENAI_PROJECT_ID:-}
+      TZ: ${TZ:-Asia/Yekaterinburg}
+    volumes:
+      - ./catalogs:/catalogs:ro
+      - ./parsed:/parsed:ro
+      - ./parsed/openai:/parsed/openai
+      - ./logs:/logs
+      - ./scripts:/scripts:ro
+    networks: [parser-edge]
+    restart: "no"
+
+  ragflow:
+    image: ${RAGFLOW_IMAGE:-infiniflow/ragflow:v0.27.0}
+    depends_on:
+      es01:
+        condition: service_healthy
+        required: true
+      mysql:
+        condition: service_healthy
+        required: true
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      tei:
+        condition: service_healthy
+        required: true
+      mineru:
+        condition: service_healthy
+        required: false
+      mineru-gpu:
+        condition: service_healthy
+        required: false
+    command: ["--enable-adminserver", "--init-model-provider-tables", "--init-superuser", "--workers=1"]
+    environment:
+      DOC_ENGINE: elasticsearch
+      DB_TYPE: mysql
+      DEVICE: cpu
+      COMPOSE_PROFILES: ${COMPOSE_PROFILES:-cpu,elasticsearch,metadata-mysql,tei-cpu}
+      ES_HOST: es01
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-guhring_es_local}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DBNAME: ${MYSQL_DBNAME:-rag_flow}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-guhring_mysql_local}
+      MINIO_HOST: minio
+      MINIO_USER: ${MINIO_USER:-rag_flow}
+      MINIO_PASSWORD: ${MINIO_PASSWORD:-guhring_minio_local}
+      REDIS_HOST: redis
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-guhring_redis_local}
+      TEI_HOST: tei
+      TEI_MODEL: ${TEI_MODEL:-BAAI/bge-small-en-v1.5}
+      MINERU_APISERVER: http://mineru:8000
+      MINERU_BACKEND: ${MINERU_BACKEND:-pipeline}
+      MINERU_OUTPUT_DIR: /ragflow/mineru-output
+      MINERU_DELETE_OUTPUT: "0"
+      USE_DOCLING: "false"
+      API_PROXY_SCHEME: python
+      REGISTER_ENABLED: "0"
+      ENABLE_REGISTER: "0"
+      DEFAULT_SUPERUSER_NICKNAME: ${RAGFLOW_ADMIN_NICKNAME:-guhring-admin}
+      DEFAULT_SUPERUSER_EMAIL: ${RAGFLOW_ADMIN_EMAIL:-admin@guhring.local}
+      DEFAULT_SUPERUSER_PASSWORD: ${RAGFLOW_ADMIN_PASSWORD:-change-me-local}
+      TZ: ${TZ:-Asia/Yekaterinburg}
+    volumes:
+      - ./data/ragflow/logs:/ragflow/logs
+      - ./data/ragflow/bootstrap:/bootstrap
+      - ./parsed/ragflow-downloads:/ragflow/mineru-output
+      - ./scripts:/opt/guhring/scripts:ro
+      - ./catalogs:/catalogs:ro
+    ports:
+      - "127.0.0.1:${RAGFLOW_UI_PORT:-8080}:80"
+      - "127.0.0.1:${RAGFLOW_API_PORT:-9380}:9380"
+    shm_size: 1gb
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost/api/v1/system/healthz"]
+      interval: 15s
+      timeout: 10s
+      retries: 60
+      start_period: 90s
+    networks:
+      parser-internal:
+        aliases: [ragflow]
+      parser-edge: {}
+    restart: unless-stopped
+
+  tools:
+    environment:
+      MINERU_API_URL: http://mineru:8000
+      MINERU_BACKEND: ${MINERU_BACKEND:-pipeline}
+      RAGFLOW_URL: http://ragflow
+      RAGFLOW_ADMIN_EMAIL: ${RAGFLOW_ADMIN_EMAIL:-admin@guhring.local}
+      RAGFLOW_ADMIN_PASSWORD: ${RAGFLOW_ADMIN_PASSWORD:-change-me-local}
+      RAGFLOW_API_KEY: ${RAGFLOW_API_KEY:-}
+      RAGFLOW_EMBEDDING_MODEL: ${TEI_MODEL:-BAAI/bge-small-en-v1.5}@Builtin
+
+  mineru:
+    profiles: [cpu]
+
+  pipeline-ui:
+    profiles: [pipeline-ui]

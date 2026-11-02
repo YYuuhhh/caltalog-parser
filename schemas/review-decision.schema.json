@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://guhring.local/schemas/review-decision.schema.json",
+  "title": "Manual review decision",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "raw_element_id",
+        "action",
+        "reviewer",
+        "reason",
+        "decided_at"
+      ],
+      "properties": {
+        "raw_element_id": {
+          "type": "string",
+          "pattern": "^raw_[0-9a-f]{32}$"
+        },
+        "action": {
+          "enum": [
+            "accept_raw",
+            "accept_proposal",
+            "reject",
+            "not_applicable"
+          ]
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decided_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proposal_id",
+        "action",
+        "reviewer",
+        "reason",
+        "decided_at"
+      ],
+      "properties": {
+        "proposal_id": {
+          "type": "string",
+          "pattern": "^missing_[0-9a-f]{32}$"
+        },
+        "action": {
+          "enum": [
+            "accept_proposal",
+            "reject"
+          ]
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decided_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_sha256",
+        "page_idx",
+        "action",
+        "reviewer",
+        "reason",
+        "decided_at"
+      ],
+      "properties": {
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "page_idx": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "action": {
+          "enum": [
+            "approve_page",
+            "reject_page"
+          ]
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decided_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  ]
+}

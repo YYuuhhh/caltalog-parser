@@ -1,0 +1,75 @@
+# Configuration template only. Register actual series/identifiers and a golden
+# set from the supplied PROMATOOL PDF before approving this mapping for release.
+mapping_schema_version: '1.0'
+mapping_profile: promatool
+mapping_version: '0.1-draft'
+manufacturer: PROMATOOL
+matcher_contract:
+  version: '1.0'
+  status: provisional
+  wide_fields: [cutting_diameter, shank_diameter, overall_length, tool_material, coating, coolant_internal, standard]
+series: []
+identifiers: []
+families:
+  - {name: drills, required_fields: [cutting_diameter, shank_diameter, overall_length]}
+  - {name: milling_cutters, required_fields: [cutting_diameter, shank_diameter, overall_length]}
+  - {name: inserts, required_fields: [standard]}
+  - {name: holders, required_fields: [standard]}
+rules:
+  - id: promatool-cutting-diameter
+    families: [drills, milling_cutters]
+    raw_headers: ['Диаметр режущей части, мм']
+    canonical_field: cutting_diameter
+    data_type: decimal
+    source_unit: mm
+    canonical_unit: mm
+    transform: decimal_comma
+    criticality: hard
+    minimum: '0.001'
+    review_required: true
+  - id: promatool-shank-diameter
+    families: [drills, milling_cutters]
+    raw_headers: ['Диаметр хвостовика, мм']
+    canonical_field: shank_diameter
+    data_type: decimal
+    source_unit: mm
+    canonical_unit: mm
+    criticality: hard
+    review_required: true
+  - id: promatool-overall-length
+    families: [drills, milling_cutters]
+    raw_headers: ['Общая длина, мм']
+    canonical_field: overall_length
+    data_type: decimal
+    source_unit: mm
+    canonical_unit: mm
+    criticality: hard
+    review_required: true
+  - id: promatool-tool-material
+    families: [drills, milling_cutters]
+    raw_headers: ['Материал инструмента']
+    canonical_field: tool_material
+    data_type: string
+    criticality: hard
+    review_required: true
+  - id: promatool-coating
+    families: [drills, milling_cutters]
+    raw_headers: ['Покрытие']
+    canonical_field: coating
+    data_type: string
+    criticality: soft
+    review_required: true
+  - id: promatool-coolant
+    families: [drills, milling_cutters]
+    raw_headers: ['Внутренняя СОЖ']
+    canonical_field: coolant_internal
+    data_type: boolean
+    criticality: hard
+    review_required: true
+  - id: promatool-standard
+    families: [drills, milling_cutters, inserts, holders]
+    raw_headers: ['Стандарт']
+    canonical_field: standard
+    data_type: string
+    criticality: hard
+    review_required: true

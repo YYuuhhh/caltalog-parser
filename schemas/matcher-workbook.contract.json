@@ -1,0 +1,21 @@
+{
+  "contract_version": "1.0",
+  "workbook": "master_matcher.xlsx",
+  "status": "stable",
+  "publication_policy": {
+    "matcher_sheet_filter": "publication_status == published",
+    "openai_can_publish_automatically": false,
+    "open_blocking_issue_excludes_row": true,
+    "unapproved_catalog_role_excludes_all_rows": true,
+    "unapproved_contract_excludes_all_rows": true
+  },
+  "sheets": {
+    "matcher": "Only published wide product rows",
+    "blocked_candidates": "Non-published candidates plus blocked_reason",
+    "attributes": "Attributes belonging only to published matcher rows",
+    "relations": "Relations belonging only to published matcher rows",
+    "provenance": "Evidence belonging only to published matcher rows",
+    "issues": "All detected blockers and warnings",
+    "_manifest": ["key", "value"]
+  }
+}

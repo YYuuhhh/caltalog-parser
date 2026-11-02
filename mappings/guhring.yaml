@@ -1,0 +1,279 @@
+mapping_schema_version: "1.0"
+mapping_profile: "guhring"
+mapping_version: "1.0.0"
+manufacturer: "Gühring"
+matcher_contract:
+  version: "1.0"
+  status: "approved"
+  wide_fields:
+    - d1
+    - d2
+    - d3
+    - d4
+    - d5
+    - l1
+    - l2
+    - l3
+    - l4
+    - l5
+    - r
+    - c
+    - Z
+    - size
+    - diameter_range
+    - standard
+    - M
+    - G
+    - thread_compatibility
+series:
+  - {article_number: "3893", family: milling_cutters, subfamily: ratio_end_mill, item_type: sku}
+  - {article_number: "3894", family: milling_cutters, subfamily: ratio_end_mill, item_type: sku}
+  - {article_number: "495", family: milling_cutters, subfamily: deburring_cutter, item_type: sku}
+  - {article_number: "6788", family: milling_cutters, subfamily: quarter_rounding_cutter, item_type: sku}
+  - {article_number: "6815", family: milling_cutters, subfamily: radius_end_mill, item_type: sku}
+  - {article_number: "4098", family: holders, subfamily: pendulum_holder, item_type: sku}
+  - {article_number: "4116", family: holders, subfamily: pendulum_holder, item_type: sku}
+  - {article_number: "4117", family: holders, subfamily: pendulum_holder, item_type: sku}
+  - {article_number: "4174", family: holders, subfamily: pendulum_holder, item_type: sku}
+  - {article_number: "4605", family: reducing_sleeves, subfamily: sealed_reducing_sleeve, item_type: sku}
+  - {article_number: "4665", family: reducing_sleeves, subfamily: sealed_reducing_sleeve, item_type: sku}
+  - {article_number: "4099", family: accessories, subfamily: extraction_key, item_type: accessory}
+families:
+  - {name: milling_cutters, required_fields: [d1, d2, d3]}
+  - {name: holders, required_fields: [d3]}
+  - {name: reducing_sleeves, required_fields: [d1, d2, d3, l1, l2, l3]}
+  - {name: accessories, required_fields: [size]}
+rules:
+  - id: guhring-d1
+    families: [milling_cutters, holders, reducing_sleeves]
+    raw_headers: [d1, "d1 mm", d1mm, "d1 e8", "d1-0,005 -0,015", "d1-0.00150,005"]
+    canonical_field: d1
+    data_type: decimal
+    source_unit: mm
+    canonical_unit: mm
+    transform: decimal_comma
+    criticality: hard
+    review_required: false
+    matcher_column: d1
+  - id: guhring-d2
+    families: [milling_cutters, holders, reducing_sleeves]
+    raw_headers: [d2, "d2 mm", d2mm, "d2 h5", "d2 h6"]
+    canonical_field: d2
+    data_type: decimal
+    source_unit: mm
+    canonical_unit: mm
+    transform: decimal_comma
+    criticality: hard
+    review_required: false
+    matcher_column: d2
+  - id: guhring-d3
+    families: [milling_cutters, reducing_sleeves]
+    raw_headers: [d3, "d3 mm", d3mm]
+    canonical_field: d3
+    data_type: decimal
+    source_unit: mm
+    canonical_unit: mm
+    transform: decimal_comma
+    criticality: hard
+    review_required: false
+    matcher_column: d3
+  - id: guhring-holder-d3-diameter
+    families: [holders]
+    series: ["4098", "4174"]
+    raw_headers: [d3, "d3 mm", d3mm]
+    canonical_field: d3
+    data_type: decimal
+    source_unit: mm
+    canonical_unit: mm
+    transform: decimal_comma
+    criticality: hard
+    review_required: false
+    matcher_column: d3
+  - id: guhring-holder-d3-interface
+    families: [holders]
+    series: ["4116", "4117"]
+    raw_headers: [d3, "d3 mm", d3mm]
+    canonical_field: d3
+    data_type: string
+    source_unit: null
+    canonical_unit: null
+    transform: identity
+    criticality: hard
+    review_required: false
+    matcher_column: d3
+  - id: guhring-d4
+    families: [holders]
+    raw_headers: [d4, "d4 mm", d4mm]
+    canonical_field: d4
+    data_type: decimal
+    source_unit: mm
+    canonical_unit: mm
+    transform: decimal_comma
+    criticality: soft
+    review_required: false
+    matcher_column: d4
+  - id: guhring-d5
+    families: [milling_cutters]
+    raw_headers: [d5, "d5 mm", d5mm]
+    canonical_field: d5
+    data_type: decimal
+    source_unit: mm
+    canonical_unit: mm
+    transform: decimal_comma
+    criticality: soft
+    review_required: false
+    matcher_column: d5
+  - id: guhring-l1
+    families: [milling_cutters, holders, reducing_sleeves]
+    raw_headers: [l1, "l1 mm", l1mm, I1, "I1 mm", I1mm, "11", "11 mm", 11mm]
+    canonical_field: l1
+    data_type: decimal
+    source_unit: mm
+    canonical_unit: mm
+    transform: decimal_comma
+    criticality: soft
+    review_required: false
+    matcher_column: l1
+  - id: guhring-l2
+    families: [milling_cutters, holders, reducing_sleeves]
+    raw_headers: [l2, "l2 mm", l2mm, "12", "12 mm", 12mm, "|2mm"]
+    canonical_field: l2
+    data_type: decimal
+    source_unit: mm
+    canonical_unit: mm
+    transform: decimal_comma
+    criticality: soft
+    review_required: false
+    matcher_column: l2
+  - id: guhring-l3
+    families: [milling_cutters, holders, reducing_sleeves]
+    raw_headers: [l3, "l3 mm", l3mm, "13", "13 mm", 13mm]
+    canonical_field: l3
+    data_type: decimal
+    source_unit: mm
+    canonical_unit: mm
+    transform: decimal_comma
+    criticality: soft
+    review_required: false
+    matcher_column: l3
+  - id: guhring-l4
+    families: [milling_cutters]
+    raw_headers: [l4, "l4 mm", l4mm, "14", "14 mm", 14mm]
+    canonical_field: l4
+    data_type: decimal
+    source_unit: mm
+    canonical_unit: mm
+    transform: decimal_comma
+    criticality: soft
+    review_required: false
+    matcher_column: l4
+  - id: guhring-l5
+    families: [milling_cutters]
+    raw_headers: [l5, "l5 mm", l5mm, "15", "15 mm", 15mm]
+    canonical_field: l5
+    data_type: decimal
+    source_unit: mm
+    canonical_unit: mm
+    transform: decimal_comma
+    criticality: soft
+    review_required: false
+    matcher_column: l5
+  - id: guhring-radius
+    families: [milling_cutters]
+    raw_headers: [r, "r mm", rmm]
+    canonical_field: r
+    data_type: decimal
+    source_unit: mm
+    canonical_unit: mm
+    transform: decimal_comma
+    criticality: soft
+    review_required: false
+    matcher_column: r
+  - id: guhring-chamfer
+    families: [milling_cutters]
+    raw_headers: [c, "c mm", cmm, "Cmm x 45°"]
+    canonical_field: c
+    data_type: decimal
+    source_unit: mm
+    canonical_unit: mm
+    transform: decimal_comma
+    criticality: soft
+    review_required: false
+    matcher_column: c
+  - id: guhring-teeth
+    families: [milling_cutters]
+    raw_headers: [Z]
+    canonical_field: Z
+    data_type: integer
+    source_unit: null
+    canonical_unit: null
+    transform: integer
+    criticality: soft
+    review_required: false
+    matcher_column: Z
+  - id: guhring-size
+    families: [holders, accessories]
+    raw_headers: [Größe, size]
+    canonical_field: size
+    data_type: string
+    source_unit: null
+    canonical_unit: null
+    transform: identity
+    criticality: soft
+    review_required: false
+    matcher_column: size
+  - id: guhring-diameter-range
+    families: [holders]
+    raw_headers: [Ø-Bereich, ∅-Bereich, "Ø-Bereich mm", "∅-Bereich mm", Ø-Bereichmm, ∅-Bereichmm]
+    canonical_field: diameter_range
+    data_type: range
+    source_unit: mm
+    canonical_unit: mm
+    transform: decimal_range
+    criticality: soft
+    review_required: false
+    matcher_column: diameter_range
+  - id: guhring-standard
+    families: [reducing_sleeves]
+    raw_headers: [Norm]
+    canonical_field: standard
+    data_type: string
+    source_unit: null
+    canonical_unit: null
+    transform: identity
+    criticality: soft
+    review_required: false
+    matcher_column: standard
+  - id: guhring-thread-m
+    families: [holders]
+    raw_headers: [M]
+    canonical_field: M
+    data_type: string
+    source_unit: null
+    canonical_unit: null
+    transform: identity
+    criticality: soft
+    review_required: false
+    matcher_column: M
+  - id: guhring-thread-g
+    families: [holders]
+    raw_headers: [G]
+    canonical_field: G
+    data_type: string
+    source_unit: null
+    canonical_unit: null
+    transform: identity
+    criticality: soft
+    review_required: false
+    matcher_column: G
+  - id: guhring-thread-compatibility
+    families: [reducing_sleeves]
+    raw_headers: ["für Gewinde"]
+    canonical_field: thread_compatibility
+    data_type: string
+    source_unit: null
+    canonical_unit: null
+    transform: identity
+    criticality: soft
+    review_required: false
+    matcher_column: thread_compatibility

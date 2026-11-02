@@ -1,0 +1,6 @@
+# Optional local multilingual TEI. Set TEI_MODEL=BAAI/bge-m3 in .env and
+# create a separate RAGFlow dataset before reindexing with the new model.
+services:
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+    command: ["--model-id", "${TEI_MODEL:-BAAI/bge-m3}", "--auto-truncate"]

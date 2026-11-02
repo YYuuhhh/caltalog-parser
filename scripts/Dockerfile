@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1.7
+
+FROM python:3.11-slim-bookworm
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      tesseract-ocr tesseract-ocr-eng tesseract-ocr-deu tesseract-ocr-rus \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install \
+      'cryptography>=43,<47' \
+      'fastapi>=0.115,<1' \
+      'httpx>=0.28,<1' \
+      'jsonschema>=4.23,<5' \
+      'lxml>=5,<7' \
+      'langdetect>=1.0.9,<2' \
+      'openpyxl>=3.1,<4' \
+      'pypdf>=5,<7' \
+      'PyMuPDF>=1.26,<2' \
+      'PyYAML>=6,<7' \
+      'pytest>=8,<9' \
+      'requests>=2.32,<3' \
+      'uvicorn>=0.34,<1' \
+      'XlsxWriter>=3.2,<4'
+
+WORKDIR /work

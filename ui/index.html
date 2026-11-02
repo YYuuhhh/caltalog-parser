@@ -1,0 +1,634 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#101114" />
+    <title>CatalogFlow · Catalog library</title>
+    <link rel="icon" href="/assets/mark.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/assets/styles.css" />
+    <script src="/assets/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to pipeline</a>
+    <header class="topbar">
+      <a class="brand" href="#"
+        ><img src="/assets/mark.svg" alt="" /><strong>CatalogFlow</strong
+        ><span>Workspace</span></a
+      >
+      <nav aria-label="Workspace">
+        <button id="show-pipeline" class="nav-pill active">Pipeline</button
+        ><button id="show-library" class="nav-pill">Library</button>
+      </nav>
+      <div class="header-right">
+        <span id="services" class="service-status">Connecting…</span
+        ><button
+          id="theme-toggle"
+          class="icon-button"
+          aria-label="Switch to light theme"
+        >
+          ☼</button
+        ><span class="avatar">CF</span>
+      </div>
+    </header>
+    <aside class="sidebar">
+      <div class="workspace-label">
+        <span class="workspace-logo">◈</span>
+        <div>
+          <strong>Catalog workspace</strong
+          ><small>CPU extraction · evidence review</small>
+        </div>
+      </div>
+      <p class="eyebrow">PIPELINE</p>
+      <nav id="navigation" aria-label="Pipeline stages"></nav>
+      <div class="sidebar-bottom">
+        <span class="dot"></span>Local library
+        <p>Evidence stays connected to its catalog, manufacturer and page.</p>
+      </div>
+    </aside>
+    <main id="main" tabindex="-1">
+      <div class="page-heading">
+        <div>
+          <p class="eyebrow">FROM DOCUMENTS TO TOOL DATA</p>
+          <h1>Catalog <span class="gradient-text">pipeline</span></h1>
+          <p>
+            Manufacturer product lists, source evidence and clear review status.
+          </p>
+        </div>
+        <div class="settings-actions">
+          <button id="load-settings" class="button subtle">Load settings</button
+          ><button id="save-settings" class="button subtle">
+            Save settings</button
+          ><input
+            id="settings-file"
+            type="file"
+            accept="application/json"
+            hidden
+          />
+        </div>
+      </div>
+      <div id="error" class="notice error" role="alert" hidden></div>
+      <div class="catalog-controls">
+        <div id="queue-controls" class="queue-controls"></div>
+        <p
+          id="queue-control-note"
+          class="help"
+          role="status"
+          aria-live="polite"
+        ></p>
+      </div>
+      <details id="catalog-progress" class="catalog-progress">
+        <summary>
+          <span>Catalogs in work</span
+          ><span id="progress-summary">No active catalogs</span>
+        </summary>
+        <div id="catalog-progress-list" class="catalog-progress-list"></div>
+      </details>
+      <div
+        id="pipeline-location"
+        class="pipeline-location"
+        role="status"
+        aria-live="polite"
+      >
+        <div>
+          <strong id="pipeline-current">Ready to choose catalogs</strong
+          ><small id="pipeline-viewing"
+            >Viewing 01 · Catalogs & manufacturers</small
+          >
+        </div>
+        <button id="go-current-stage" class="button outline" hidden>
+          Go to current stage
+        </button>
+      </div>
+      <div id="pipeline-view" class="pipeline-layout">
+        <div class="vertical-pipeline">
+          <section id="catalog" class="stage-card">
+            <div class="stage-heading">
+              <span class="stage-number">01</span>
+              <div>
+                <h2>Catalogs & manufacturers</h2>
+                <p>
+                  Choose one target manufacturer. Assign a source manufacturer
+                  to each PDF.
+                </p>
+              </div>
+            </div>
+            <div class="field-grid">
+              <label class="field wide"
+                >Target manufacturer<select
+                  id="target-manufacturer"
+                  aria-describedby="target-help"
+                ></select
+                ><small id="target-help"
+                  >Tools from other manufacturers will be compared with this
+                  manufacturer's tools. There is one target for the
+                  library.</small
+                ></label
+              >
+            </div>
+            <div class="upload-zone" id="upload-zone">
+              <span class="upload-symbol">↥</span
+              ><strong>Add your catalogs</strong>
+              <p>
+                Drop multiple PDFs here, or choose files. Manufacturer and
+                languages are detected locally. Full catalog extraction is the
+                default.
+              </p>
+              <button id="upload-button" class="button outline">
+                Choose PDFs</button
+              ><input
+                id="pdf-upload"
+                type="file"
+                accept="application/pdf,.pdf"
+                multiple
+                hidden
+              /><span id="upload-status" role="status"></span>
+            </div>
+            <div class="section-caption">
+              <strong>Available PDFs</strong
+              ><span id="selected-count">0 selected</span>
+            </div>
+            <input
+              id="catalog-search"
+              type="search"
+              placeholder="Find a catalog…"
+              aria-label="Find a catalog"
+            />
+            <div id="source-list" class="source-list"></div>
+            <div id="language-fields" class="language-fields"></div>
+            <details>
+              <summary>Catalog details</summary>
+              <p class="help">
+                Catalog IDs are automatic: manufacturer + PDF fingerprint. They
+                connect source pages, caches, review evidence and library
+                records. Revision distinguishes editions; languages guide
+                interpretation; families select the tool schemas.
+              </p>
+              <div class="field-grid" id="metadata-fields"></div>
+            </details>
+          </section>
+          <section id="extract" class="stage-card">
+            <div class="stage-heading">
+              <span class="stage-number">02</span>
+              <div>
+                <h2>Extract pages</h2>
+                <p>
+                  The CPU model reads tables, text, formulas and image evidence.
+                </p>
+              </div>
+              <span class="badge">CPU</span>
+            </div>
+            <div id="extract-fields" class="field-grid"></div>
+            <div id="page-fields" class="field-grid" hidden></div>
+            <div class="notice" id="page-scope-note">
+              Full catalog · every PDF page
+            </div>
+            <details>
+              <summary>Extraction quality & limits</summary>
+              <div id="quality-fields" class="field-grid"></div>
+              <p class="help">
+                Automatic quality measures native-text coverage and available
+                OCR text confidence. Low-confidence pages retry with OCR or
+                native text. It keeps the stronger result without losing table
+                cells. These diagnostic scores do not replace model review.
+              </p>
+            </details>
+          </section>
+          <section id="review" class="stage-card">
+            <div class="stage-heading">
+              <span class="stage-number">03</span>
+              <div>
+                <h2>Review the evidence</h2>
+                <p>
+                  Always required. Separate goals, fresh sessions and only the
+                  current page's evidence.
+                </p>
+              </div>
+              <span class="badge required">Always on</span>
+            </div>
+            <div class="review-stages">
+              <div>
+                <span>1</span><strong>Page correctness</strong>
+                <p>
+                  Values, columns, units, tolerances and OCR against the PDF.
+                </p>
+              </div>
+              <div>
+                <span>2</span><strong>Page completeness</strong>
+                <p>
+                  All rows, tables, figures, headers and footnotes accounted
+                  for.
+                </p>
+              </div>
+              <div>
+                <span>3</span><strong>Internet verification</strong>
+                <p>
+                  Product data checked against official manufacturer sources.
+                </p>
+              </div>
+            </div>
+            <div id="review-pending" class="review-pending" hidden></div>
+            <div id="review-fields" class="field-grid"></div>
+            <details id="local-settings" open>
+              <summary>Local models · memory & server</summary>
+              <div id="local-fields" class="field-grid"></div>
+              <button
+                id="local-model-refresh"
+                class="button outline"
+                type="button"
+              >
+                Check local server & models
+              </button>
+              <p id="local-model-status" class="notice" role="status"></p>
+              <p class="help">
+                CPU only · one task and one loaded model at a time. Presets
+                reserve RAM for context, images, the extractor and the operating
+                system. Models are never downloaded by merely selecting them.
+                Missing web evidence leaves internet checks unverified.
+              </p>
+            </details>
+            <button id="model-refresh" class="button subtle" type="button">
+              Reload available models
+            </button>
+            <p id="model-catalog-info" class="help"></p>
+            <div class="notice" id="review-mode-note"></div>
+            <details>
+              <summary>Review context & image quality</summary>
+              <div id="context-fields" class="field-grid"></div>
+              <p class="help">
+                Each request has a fixed goal and the stage's chosen reasoning.
+                Context is limited to one page and a bounded group of records or
+                tools. Sessions are never resumed. Original page images
+                accompany every task.
+              </p>
+            </details>
+          </section>
+          <section id="mapping" class="stage-card">
+            <div class="stage-heading">
+              <span class="stage-number">04</span>
+              <div>
+                <h2>Manufacturer product list</h2>
+                <p>
+                  Normalized products in worksheet 1. A concise parameter and
+                  coating dictionary in worksheet 2 of the same Excel file.
+                </p>
+              </div>
+              <span class="badge required">Always on</span>
+            </div>
+            <label class="field"
+              >View manufacturer<select id="mapping-manufacturer"></select
+            ></label>
+            <a id="manufacturer-workbook" class="button outline" download
+              >Download manufacturer Excel</a
+            >
+            <div id="manufacturer-products" class="table-scroll"></div>
+            <div id="dictionary-summary" class="notice"></div>
+            <details>
+              <summary>Worksheet 2 · dictionary preview</summary>
+              <div id="dictionary" class="table-scroll"></div>
+            </details>
+            <details>
+              <summary>Mapping rules & editing</summary>
+              <p class="help">
+                A rule connects a printed header to a structured field. Family
+                and series limits prevent the same letter being given the wrong
+                meaning. Unverified proposals stay visible for review. Saving
+                makes a versioned manufacturer profile; existing source files
+                are preserved.
+              </p>
+              <textarea
+                id="mapping-json"
+                rows="12"
+                spellcheck="false"
+                aria-label="Manufacturer mapping JSON"
+              ></textarea
+              ><button id="save-mapping" class="button outline">
+                Save manufacturer mapping
+              </button>
+            </details>
+          </section>
+          <section id="structure" class="stage-card">
+            <div class="stage-heading">
+              <span class="stage-number">05</span>
+              <div>
+                <h2>Structure & compare</h2>
+                <p>
+                  Convert reviewed page data into tools and compare with the
+                  existing library.
+                </p>
+              </div>
+            </div>
+            <div class="output-stages">
+              <div>
+                <strong>RAW</strong>
+                <p>
+                  The extracted content exactly as received, with PDF and page
+                  provenance.
+                </p>
+              </div>
+              <div>
+                <strong>Canonical tools</strong>
+                <p>
+                  One identity per tool, typed parameter values, units and the
+                  manufacturer's field rules.
+                </p>
+              </div>
+              <div>
+                <strong>Matcher</strong>
+                <p>
+                  Comparison-ready tools that pass the existing publication
+                  gates. Drafts remain blocked.
+                </p>
+              </div>
+            </div>
+            <div class="notice">
+              Duplicate candidates compare every available parameter, unit, fit
+              and tolerance. Same-name conflicts are shown separately. Records
+              are retained for comparison.
+            </div>
+            <div id="structure-fields" class="field-grid"></div>
+          </section>
+          <section id="final" class="stage-card">
+            <div id="final-pending" class="review-pending" hidden></div>
+            <div class="stage-heading">
+              <span class="stage-number">06</span>
+              <div>
+                <h2>Final tool validation</h2>
+                <p>
+                  An independently selected model checks structured tools
+                  against their original evidence.
+                </p>
+              </div>
+              <span class="badge">Independent model</span>
+            </div>
+            <div id="final-fields" class="field-grid"></div>
+            <p id="final-model-note" class="notice"></p>
+            <ul class="check-list">
+              <li>
+                Correct letters, parameter meanings and series-specific mappings
+              </li>
+              <li>Every value, unit, fit, tolerance and dimensioned drawing</li>
+              <li>Original PDF and precise official internet sources</li>
+              <li>Duplicate candidates and conflicting parameter values</li>
+              <li>Workbook integrity and catalog completeness</li>
+            </ul>
+            <p class="help">
+              A missing review, incomplete catalog, unavailable source or
+              unresolved value prevents validated status. Review issues remain
+              attached to the catalog.
+            </p>
+          </section>
+          <section id="results" class="stage-card">
+            <div class="stage-heading">
+              <span class="stage-number">07</span>
+              <div>
+                <h2>Run results</h2>
+                <p>
+                  Progress, review evidence, duplicate comparisons and workbooks
+                  for each catalog.
+                </p>
+              </div>
+            </div>
+            <label class="field"
+              >Saved catalog run<select
+                id="run-select"
+                aria-label="Saved catalog run"
+              ></select
+            ></label>
+            <div id="run-results" class="empty-state">
+              Run your selected catalogs to see results here.
+            </div>
+          </section>
+        </div>
+        <aside class="run-summary">
+          <p class="eyebrow">YOUR NEXT RUN</p>
+          <h2>Catalog queue</h2>
+          <div id="queue-summary"></div>
+          <div class="summary-divider"></div>
+          <p id="reviewer-status" class="help"></p>
+          <p class="help">
+            CPU extraction · isolated evidence<br />Independent review models ·
+            clear validation status
+          </p>
+          <button id="preview" class="button outline full">
+            Preview selection</button
+          ><button id="run" class="button primary full" disabled>
+            Run selected catalogs →
+          </button>
+          <div id="run-announcement" role="status"></div>
+          <p class="summary-footnote">
+            Catalogs run one at a time. Each has its own progress and results.
+          </p>
+        </aside>
+      </div>
+      <section id="library-view" hidden>
+        <div class="stage-card">
+          <div class="stage-heading">
+            <div>
+              <h2>Manufacturer & catalog library</h2>
+              <p>
+                All registered manufacturers, parsed editions and parameter
+                comparisons.
+              </p>
+            </div>
+            <button id="refresh-library" class="button outline">Refresh</button>
+          </div>
+          <form id="manufacturer-form" class="add-manufacturer">
+            <input
+              id="new-manufacturer"
+              required
+              maxlength="100"
+              placeholder="Add a manufacturer"
+              aria-label="New manufacturer name"
+            /><button class="button primary">Add manufacturer</button>
+          </form>
+          <input
+            id="library-search"
+            type="search"
+            placeholder="Search manufacturers or catalogs…"
+            aria-label="Search library"
+          />
+          <div id="library-manufacturers" class="manufacturer-grid"></div>
+          <h3>Catalogs</h3>
+          <div id="library-catalogs" class="table-scroll"></div>
+          <h3>Duplicate candidates</h3>
+          <div id="library-duplicates"></div>
+          <p class="help">
+            The directory is extensible; it does not claim to enumerate every
+            manufacturer worldwide. A catalog is validated only after every
+            required review and workbook check succeeds.
+          </p>
+        </div>
+      </section>
+      <footer>
+        <span><span class="dot"></span>CatalogFlow workspace</span
+        ><span>MinerU CPU · Chat / Work review</span>
+      </footer>
+    </main>
+    <dialog id="plan-dialog">
+      <div class="dialog-header">
+        <h2>Your catalog selection</h2>
+        <button
+          id="close-preview"
+          class="icon-button"
+          aria-label="Close preview"
+        >
+          ×
+        </button>
+      </div>
+      <div id="plan-body"></div>
+    </dialog>
+    <dialog id="task-dialog">
+      <div class="dialog-header">
+        <h2>Fresh ChatGPT review task</h2>
+        <button id="close-task" class="icon-button" aria-label="Close task">
+          ×
+        </button>
+      </div>
+      <p class="help">
+        Open a fresh Work session, select the task's model and reasoning level,
+        and provide this task, schema and page image. This is a manual handoff;
+        the import cannot authenticate which model generated the answer.
+      </p>
+      <div id="task-content"></div>
+      <div class="task-import">
+        <button id="import-task-result" class="button outline">
+          Import JSON file</button
+        ><input
+          id="task-result-file"
+          type="file"
+          accept="application/json,.json"
+          hidden
+        />
+      </div>
+      <label class="field"
+        >Paste the JSON result<textarea
+          id="task-result"
+          rows="8"
+        ></textarea></label
+      ><button id="submit-task" class="button primary">
+        Submit review result
+      </button>
+    </dialog>
+    <div id="parameter-tooltip" role="tooltip" hidden></div>
+    <dialog id="manual-dialog">
+      <div class="dialog-header">
+        <h2>Manual tool review</h2>
+        <button
+          id="close-manual"
+          class="icon-button"
+          aria-label="Close manual review"
+        >
+          ×
+        </button>
+      </div>
+      <p class="help manual-scope">
+        Compare the tool with its PDF and saved internet evidence. Your checks
+        and notes are saved for this snapshot; validation findings still need
+        resolution.
+      </p>
+      <div class="manual-navigation">
+        <button id="manual-prev" class="button outline">Previous</button>
+        <select id="manual-tool-select" aria-label="Tool to review"></select>
+        <button id="manual-next" class="button outline">Next</button>
+        <button id="manual-next-pending" class="button outline">
+          Next unchecked
+        </button>
+      </div>
+      <div id="manual-content" class="manual-workspace">
+        <aside class="manual-list-pane">
+          <input
+            id="manual-search"
+            type="search"
+            placeholder="Find a tool, parameter or page…"
+            aria-label="Search review tools"
+          />
+          <select id="manual-filter" aria-label="Filter review tools">
+            <option value="all">All tools</option>
+            <option value="pending">Unchecked</option>
+            <option value="needs_changes">Needs correction</option>
+            <option value="checked">Checked</option>
+          </select>
+          <p id="manual-count" class="help" role="status"></p>
+          <div id="manual-tool-list"></div>
+        </aside>
+        <section class="manual-pdf-pane">
+          <div class="manual-pdf-toolbar">
+            <strong>Original PDF</strong
+            ><select id="manual-page" aria-label="Evidence page"></select
+            ><button
+              id="manual-zoom-out"
+              class="icon-button"
+              aria-label="Zoom out"
+            >
+              −</button
+            ><button id="manual-fit" class="button subtle">Fit</button
+            ><button
+              id="manual-zoom-in"
+              class="icon-button"
+              aria-label="Zoom in"
+            >
+              +
+            </button>
+          </div>
+          <div id="manual-pdf" class="manual-pdf"></div>
+        </section>
+        <section class="manual-data-pane">
+          <h3 id="manual-title"></h3>
+          <p id="manual-identity" class="help"></p>
+          <div class="manual-tabs" role="tablist" aria-label="Tool evidence">
+            <button
+              id="manual-tab-parameters"
+              role="tab"
+              aria-controls="manual-detail"
+              aria-selected="true"
+            >
+              Parameters
+            </button>
+            <button
+              id="manual-tab-findings"
+              role="tab"
+              aria-controls="manual-detail"
+              aria-selected="false"
+            >
+              Findings
+            </button>
+            <button
+              id="manual-tab-internet"
+              role="tab"
+              aria-controls="manual-detail"
+              aria-selected="false"
+            >
+              Internet
+            </button>
+          </div>
+          <div
+            id="manual-detail"
+            role="tabpanel"
+            aria-labelledby="manual-tab-parameters"
+          ></div>
+          <div class="manual-decision">
+            <label class="field"
+              >Review notes<textarea
+                id="manual-notes"
+                rows="3"
+                maxlength="2000"
+                placeholder="Record a mismatch or a question…"
+              ></textarea>
+            </label>
+            <div class="manual-decision-actions">
+              <button id="manual-checked" class="button primary">
+                Mark checked</button
+              ><button id="manual-correction" class="button outline">
+                Needs correction</button
+              ><button id="manual-save" class="button subtle">
+                Save notes
+              </button>
+            </div>
+            <p id="manual-save-status" class="help" role="status"></p>
+          </div>
+        </section>
+      </div>
+    </dialog>
+  </body>
+</html>

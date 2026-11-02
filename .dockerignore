@@ -1,0 +1,7 @@
+.git
+data
+parsed
+logs
+catalogs
+__pycache__
+*.pyc
