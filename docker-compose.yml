@@ -102,7 +102,7 @@ services:
       - ./mappings:/mappings:ro
       - ./ui:/ui:ro
     ports:
-      - "127.0.0.1:${PIPELINE_UI_PORT:-7861}:7861"
+      - "${PIPELINE_UI_BIND:-127.0.0.1}:${PIPELINE_UI_PORT:-7861}:7861"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:7861/health', timeout=3)"]
       interval: 15s

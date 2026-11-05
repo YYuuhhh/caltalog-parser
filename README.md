@@ -15,6 +15,11 @@ Open <http://127.0.0.1:7861>. To use a Windows source folder from WSL, set this 
 GUHRING_CATALOG_DIR=/mnt/c/Users/senka/Desktop/Каталоги/GUHRING
 ```
 
+For **http://172.172.1.25:7777**, use the [server deployment instructions](deploy/server/README.md)
+and `deploy/server/.env.example`. Set `PIPELINE_UI_BIND=0.0.0.0` and
+`PIPELINE_UI_PORT=7777` on that server. Local development defaults to
+`127.0.0.1:7861`; the UI container continues listening on its internal port 7861.
+
 Run `make ui` after changing the folder. It is mounted **read-only** at `/catalogs/imports/guhring` in the UI, CPU extractor and tools container. The source picker lists PDFs recursively with a **Windows · GUHRING** label. When present, `GTC_Milling_Cutters 2018.pdf` from this folder is selected initially; other catalogs stay unselected until chosen. With no configured folder, `catalogs/imports/guhring` is used. Originals are not copied or modified, and listing files does not start parsing.
 
 The default stack contains the CPU extractor, the workbench and a local Ollama server. RAGFlow, GPU parsing, Elasticsearch, MySQL, Redis, MinIO and TEI are not needed by this pipeline.
