@@ -24,6 +24,9 @@ let localInstalls = [],
   localDiscoverySerial = 0;
 let installPollBusy = false,
   localDiscoveryAt = 0;
+let localDeletion = null,
+  modelDeleteConfirmation = null,
+  modelDeletionError = "";
 let pollBusy = false;
 const refreshedMappings = new Set();
 const runPanels = new Map();
@@ -787,7 +790,9 @@ function refresh() {
     ([provider, name]) =>
       data[provider] === "local" &&
       data[name] !== "none" &&
-      !bootstrap.local_llm.models.some((model) => model.id === data[name]),
+      (!bootstrap.local_llm.models.some((model) => model.id === data[name]) ||
+        (localDeletion?.url === data.local_url.replace(/\/$/, "") &&
+          localDeletion.model === data[name])),
   );
   const invalidSelection =
     !selected.size || [...selected.values()].some((v) => !v);
@@ -934,6 +939,23 @@ function updateReasoning(name, modelName) {
 let modelsLoaded = false;
 function localModelChoices() {
   const choices = new Map();
+  for (const job of localInstalls)
+    if (job.model !== "none" && !choices.has(job.model))
+      choices.set(job.model, job.model_info || { id: job.model });
+  for (const name of ["model", "final_model"])
+    if (
+      inputs.get(name === "model" ? "review_provider" : "final_provider")
+        .value === "local"
+    ) {
+      const id = inputs.get(name).value;
+      if (
+        id &&
+        id !== "none" &&
+        !bootstrap.models.work_models.some((m) => m.id === id) &&
+        !choices.has(id)
+      )
+        choices.set(id, { id });
+    }
   for (const preset of bootstrap.local_llm.presets) {
     for (const id of [preset.model, preset.final_model || preset.model])
       choices.set(id, {
@@ -999,6 +1021,8 @@ function resetLocalModels() {
   localInstalls = [];
   localDiscoveryBusy = false;
   localDiscoveryAt = 0;
+  modelDeleteConfirmation = null;
+  modelDeletionError = "";
 }
 function closeModelPickers() {
   for (const picker of modelPickers.values()) {
@@ -1102,6 +1126,8 @@ function modelState(id) {
   if (id === "none")
     return { icon: "∅", text: "Model checks disabled", installed: true };
   const job = localInstalls.find((j) => j.model === id);
+  if (localDeletion?.url === localServerUrl() && localDeletion.model === id)
+    return { icon: "◌", text: "Deleting weights…", deleting: true };
   if (bootstrap.local_llm.models.some((m) => m.id === id))
     return { icon: "✓", text: "Installed", installed: true };
   if (job && ["queued", "downloading"].includes(job.status))
@@ -1157,6 +1183,9 @@ function renderModelPicker(name) {
     input.value,
     localInstalls,
     bootstrap.local_llm.available,
+    localDeletion,
+    modelDeleteConfirmation,
+    modelDeletionError,
   ]);
   if (picker.signature === signature) return;
   picker.signature = signature;
@@ -1207,7 +1236,29 @@ function renderModelPicker(name) {
       );
       choose.append(node("span", "model-state-icon", state.icon), text);
       row.append(choose);
-      if (model.id !== "none" && !state.installed) {
+      if (model.id !== "none" && (state.installed || state.deleting)) {
+        const remove = button(
+          state.deleting ? "Deleting…" : "Delete",
+          () => {
+            modelDeleteConfirmation = model.id;
+            modelDeletionError = "";
+            refresh();
+          },
+          "model-delete",
+        );
+        remove.dataset.model = model.id;
+        remove.dataset.action = "delete";
+        remove.setAttribute("aria-label", `Delete ${model.id}`);
+        remove.title =
+          "Remove this model's installed weights from the selected server";
+        remove.disabled =
+          !!localDeletion ||
+          !bootstrap.local_llm.available ||
+          localInstalls.some((j) =>
+            ["queued", "downloading"].includes(j.status),
+          );
+        row.append(remove);
+      } else if (model.id !== "none") {
         const install = button(
           state.active ? "Installing…" : state.failed ? "Retry" : "Install",
           () => installModel(model.id),
@@ -1221,11 +1272,54 @@ function renderModelPicker(name) {
         );
         install.disabled =
           state.active ||
+          !!localDeletion ||
           !bootstrap.local_llm.available ||
           localInstalls.some((j) =>
             ["queued", "downloading"].includes(j.status),
           );
         row.append(install);
+      }
+      if (
+        modelDeleteConfirmation === model.id &&
+        (state.installed || state.deleting)
+      ) {
+        const confirmation = node("div", "model-delete-confirmation");
+        confirmation.setAttribute("role", "group");
+        confirmation.setAttribute("aria-label", `Delete installed ${model.id}`);
+        confirmation.append(
+          node(
+            "p",
+            "",
+            "Remove installed weights from this server? You can install the model again.",
+          ),
+        );
+        if (modelDeletionError)
+          confirmation.append(
+            node("p", "model-delete-error", modelDeletionError),
+          );
+        const confirm = button(
+          "Delete weights",
+          () => deleteModel(model.id),
+          "model-delete",
+        );
+        confirm.setAttribute("aria-label", `Confirm delete ${model.id}`);
+        const cancel = button(
+          "Cancel",
+          () => {
+            modelDeleteConfirmation = null;
+            modelDeletionError = "";
+            refresh();
+          },
+          "model-refresh-inline",
+        );
+        cancel.setAttribute("aria-label", `Cancel deleting ${model.id}`);
+        confirm.dataset.model = cancel.dataset.model = model.id;
+        confirm.dataset.action = "confirm-delete";
+        cancel.dataset.action = "cancel-delete";
+        confirm.disabled = row.querySelector(".model-delete").disabled;
+        cancel.disabled = !!localDeletion;
+        confirmation.append(confirm, cancel);
+        row.append(confirmation);
       }
       if (state.active) {
         const progress = node("progress", "model-install-progress");
@@ -1296,8 +1390,37 @@ async function installModel(model) {
     showError(error);
   }
 }
+async function deleteModel(model) {
+  if (localDeletion) return;
+  const url = localServerUrl();
+  localDeletion = { url, model };
+  modelDeletionError = "";
+  refresh();
+  try {
+    await api("/api/local-models", {
+      method: "DELETE",
+      body: JSON.stringify({ url, model }),
+    });
+    if (url !== localServerUrl()) return;
+    bootstrap.local_llm.models = bootstrap.local_llm.models.filter(
+      (m) => m.id !== model,
+    );
+    modelDeleteConfirmation = null;
+    await refreshLocalModels();
+  } catch (error) {
+    if (url === localServerUrl()) modelDeletionError = error.message;
+  } finally {
+    localDeletion = null;
+    refresh();
+  }
+}
 async function pollModelInstalls() {
-  if (installPollBusy || localDiscoveryBusy || !bootstrap.local_llm.available)
+  if (
+    installPollBusy ||
+    localDiscoveryBusy ||
+    localDeletion ||
+    !bootstrap.local_llm.available
+  )
     return;
   installPollBusy = true;
   const url = localServerUrl();
@@ -2503,7 +2626,12 @@ async function openTask(id) {
 }
 async function init() {
   document.addEventListener("click", (event) => {
-    if (!event.target.closest(".model-picker")) closeModelPickers();
+    if (
+      !event
+        .composedPath()
+        .some((target) => target.classList?.contains("model-picker"))
+    )
+      closeModelPickers();
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {

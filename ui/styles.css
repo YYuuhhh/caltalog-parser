@@ -810,7 +810,8 @@ select {
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
-.model-install {
+.model-install,
+.model-delete {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
@@ -821,9 +822,32 @@ select {
 .model-install:hover:not(:disabled) {
   border-color: var(--cyan);
 }
-.model-install:disabled {
+.model-delete {
+  color: var(--danger);
+}
+.model-delete:hover:not(:disabled) {
+  border-color: var(--danger);
+}
+.model-install:disabled,
+.model-delete:disabled {
   color: var(--muted);
   opacity: 0.6;
+}
+.model-delete-confirmation {
+  grid-column: 1/-1;
+  padding: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.model-delete-confirmation p {
+  margin: 0 0 8px;
+}
+.model-delete-confirmation button + button {
+  margin-left: 8px;
+}
+.model-delete-confirmation .model-delete-error {
+  color: var(--danger);
+  overflow-wrap: anywhere;
 }
 .model-install-progress {
   grid-column: 1/-1;

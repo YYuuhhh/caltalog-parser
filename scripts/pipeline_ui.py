@@ -715,9 +715,42 @@ class Jobs:
             if path.is_file()
         ]
 
+    def check_model_unused(self, url, model):
+        with self.lock:
+            for job in set(self.pending) | ({self.active} if self.active else set()):
+                state = json.loads((self.folder(job) / "state.json").read_text())
+                config = state["config"]
+                if config.get("local_url", "").rstrip("/") != url:
+                    continue
+                if any(
+                    config.get(provider) == "local" and config.get(field) == model
+                    for provider, field in (
+                        ("review_provider", "model"),
+                        ("final_provider", "final_model"),
+                    )
+                ):
+                    raise local_model_install.Conflict(
+                        f"This model is reserved by an active or queued catalog ({state.get('source_name', job)}). Stop that catalog before deleting it."
+                    )
+
+    def check_models_not_deleting(self, config):
+        for provider, field in (
+            ("review_provider", "model"),
+            ("final_provider", "final_model"),
+        ):
+            if getattr(config, provider) == "local" and model_installer.is_removing(
+                config.local_url, getattr(config, field)
+            ):
+                raise HTTPException(
+                    409,
+                    "A selected local model is being deleted. Choose an installed model or wait for deletion to finish.",
+                )
+
     def start_many(self, configs):
         prepared = [(config, *validate_settings(config)) for config in configs]
         with self.lock:
+            for config in configs:
+                self.check_models_not_deleting(config)
             result = []
             for config, source, pages, mapping in prepared:
                 job = uuid.uuid4().hex
@@ -792,6 +825,7 @@ class Jobs:
                 )
             config = Settings(**saved_config)
             validate_settings(config)
+            self.check_models_not_deleting(config)
             state["config"] = config.model_dump()
             manifest_path = self.folder(job) / "catalog.yaml"
             if manifest_path.is_file():
@@ -1866,6 +1900,25 @@ def install_local_model(config: LocalInstallInput):
         return model_installer.start(
             config.url, config.model, ROOTS["logs"] / "local-model-installs"
         )
+    except local_model_install.Conflict as exc:
+        raise HTTPException(409, redact(str(exc)))
+    except ValueError as exc:
+        raise HTTPException(400, redact(str(exc)))
+
+
+@app.delete("/api/local-models")
+def delete_local_model(config: LocalInstallInput):
+    try:
+        return model_installer.delete(
+            config.url,
+            config.model,
+            ROOTS["logs"] / "local-model-installs",
+            jobs.check_model_unused,
+        )
+    except local_model_install.Conflict as exc:
+        raise HTTPException(409, redact(str(exc)))
+    except local_model_install.DeleteError as exc:
+        raise HTTPException(502, redact(str(exc)))
     except ValueError as exc:
         raise HTTPException(400, redact(str(exc)))
 
@@ -1913,6 +1966,8 @@ def plan(config: Settings):
 def start(config: Settings):
     try:
         return jobs.start(config)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(400, redact(str(exc)))
 
@@ -1925,6 +1980,8 @@ class BatchInput(BaseModel):
 def batch(config: BatchInput):
     try:
         return {"runs": jobs.start_many(config.catalogs)}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(400, redact(str(exc)))
 

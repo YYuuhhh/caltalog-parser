@@ -79,6 +79,15 @@ Start parsing after choosing installed models, or choose **No model** to proceed
 with the corresponding checks skipped. Work models remain account-based choices
 and do not install locally.
 
+Installed local models have a **Delete** button in both menus. Confirm **Delete
+weights** to remove the model from the selected Ollama server; both menus then
+offer **Install** again. Catalogs already using or queueing that model must be
+stopped first, and deletion waits until any UI model installation finishes.
+Deleting a selected model keeps that selection visible but unavailable until
+you reinstall it, choose another installed model, or select **No model**.
+Delete removes installed models; it does not stop downloads or clear unfinished
+download files.
+
 Supply precise HTTPS manufacturer product/catalog URLs or an optional private SearXNG server for internet checks. HTML and bounded PDF evidence are fetched and saved for the local model. A citation can only support a passed internet check if its source was actually retrieved. Missing sources stay **unverified**, and unresolved findings keep a catalog unvalidated. Local model self-reported confidence does not establish correctness.
 
 Run a real selected-page test, including both models and final validation:

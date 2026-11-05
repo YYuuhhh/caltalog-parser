@@ -14,11 +14,23 @@ const REVIEW = "qwen3-vl:8b-instruct",
   const installed = new Set([REVIEW]);
   const pulls = [];
   const pending = [];
-  let failNext = false;
+  const deletes = [];
+  const pendingDeletes = [];
+  let failNext = false,
+    failDelete = false;
   const server = http.createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
     const body = raw ? JSON.parse(raw) : {};
+    if (req.method === "DELETE" && req.url === "/api/delete") {
+      deletes.push(body.model);
+      if (failDelete) {
+        failDelete = false;
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Deletion denied (test fixture)" }));
+      } else pendingDeletes.push({ res, model: body.model });
+      return;
+    }
     if (req.url === "/api/pull") {
       pulls.push(body);
       assert(body.stream);
@@ -267,6 +279,107 @@ const REVIEW = "qwen3-vl:8b-instruct",
         "3 installed vision",
       ),
     );
+    await open("model");
+    await row("model", REVIEW)
+      .getByRole("button", { name: `Delete ${REVIEW}`, exact: true })
+      .click();
+    await page.waitForTimeout(1700);
+    assert(
+      await row("model", REVIEW)
+        .getByRole("button", { name: `Confirm delete ${REVIEW}`, exact: true })
+        .isVisible(),
+      "Polling must preserve the deletion confirmation",
+    );
+    await row("model", REVIEW)
+      .getByRole("button", { name: `Cancel deleting ${REVIEW}`, exact: true })
+      .click();
+    assert.equal(deletes.length, 0);
+    assert(!(await row("model", "none").locator(".model-delete").count()));
+    failDelete = true;
+    await row("model", REVIEW)
+      .getByRole("button", { name: `Delete ${REVIEW}`, exact: true })
+      .click();
+    await row("model", REVIEW)
+      .getByRole("button", { name: `Confirm delete ${REVIEW}`, exact: true })
+      .click();
+    await waitUntil(async () =>
+      (await row("model", REVIEW).textContent()).includes("Deletion denied"),
+    );
+    assert(
+      await row("model", REVIEW)
+        .getByRole("button", { name: `Choose ${REVIEW}`, exact: true })
+        .isEnabled(),
+    );
+    await row("model", REVIEW)
+      .getByRole("button", { name: `Cancel deleting ${REVIEW}`, exact: true })
+      .click();
+    const custom = "fixture-vision:custom";
+    installed.add(custom);
+    await menu("model")
+      .getByRole("button", { name: "Refresh", exact: true })
+      .click();
+    await waitUntil(async () => await row("model", custom).count());
+    await row("model", custom)
+      .getByRole("button", { name: `Choose ${custom}`, exact: true })
+      .click();
+    await open("final_model");
+    await row("final_model", custom)
+      .getByRole("button", { name: `Choose ${custom}`, exact: true })
+      .click();
+    await open("model");
+    await row("model", custom)
+      .getByRole("button", { name: `Delete ${custom}`, exact: true })
+      .click();
+    await row("model", custom)
+      .getByRole("button", { name: `Confirm delete ${custom}`, exact: true })
+      .click();
+    await waitUntil(async () => pendingDeletes.length === 1);
+    assert(
+      await row("model", custom)
+        .getByRole("button", { name: `Choose ${custom}`, exact: true })
+        .isDisabled(),
+    );
+    assert(await page.locator("#run").isDisabled());
+    await open("final_model");
+    assert(
+      (await row("final_model", custom).textContent()).includes(
+        "Deleting weights",
+      ),
+    );
+    const removed = pendingDeletes.shift();
+    installed.delete(removed.model);
+    removed.res.end(); // Native Ollama deletion has an empty 200 response.
+    await waitUntil(
+      async () =>
+        await row("final_model", custom)
+          .getByRole("button", { name: `Install ${custom}`, exact: true })
+          .isEnabled(),
+    );
+    for (const name of ["model", "final_model"])
+      assert.equal(
+        await page.locator(`select[name=${name}]`).inputValue(),
+        custom,
+        "Deleting a selected custom model must preserve the unavailable selection",
+      );
+    assert(await page.locator("#run").isDisabled());
+    assert(
+      installed.has(REVIEW) && installed.has(FINAL) && installed.has(LARGE),
+    );
+    assert.deepEqual(deletes, [REVIEW, custom]);
+    await row("final_model", custom)
+      .getByRole("button", { name: `Install ${custom}`, exact: true })
+      .click();
+    await waitUntil(async () => pending.length === 1);
+    finish();
+    await waitUntil(
+      async () =>
+        await row("final_model", custom)
+          .getByRole("button", { name: `Choose ${custom}`, exact: true })
+          .isEnabled(),
+    );
+    assert(await page.locator("#run").isEnabled());
+    assert.equal(pulls.length, 4);
+    await page.keyboard.press("Escape");
     installed.clear();
     await page.locator("#local-model-refresh").click();
     await waitUntil(async () =>
@@ -288,6 +401,7 @@ const REVIEW = "qwen3-vl:8b-instruct",
     const report = {
       passed: true,
       pulls: pulls.map((p) => p.model),
+      deletes,
       realWeightDownloads: 0,
       workCalls: 0,
       checks: [
@@ -300,6 +414,11 @@ const REVIEW = "qwen3-vl:8b-instruct",
         "verified models selectable",
         "failure/retry",
         "external removal refreshed",
+        "delete cancellation",
+        "delete failure keeps model installed",
+        "deletion state shared between menus",
+        "selected custom model retained after deletion",
+        "deleted model can be reinstalled",
         "server change clears installed state",
         "keyboard",
         "mobile bounds",
@@ -320,6 +439,7 @@ const REVIEW = "qwen3-vl:8b-instruct",
     throw error;
   } finally {
     for (const item of pending) item.res.end();
+    for (const item of pendingDeletes) item.res.end();
     await browser.close();
     server.closeAllConnections();
     emptyServer.closeAllConnections();
