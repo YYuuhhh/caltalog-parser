@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 import copy
+import errno
 import json
 import asyncio
 import os
 import re
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -1579,6 +1581,43 @@ jobs = Jobs()
 app = FastAPI(title="CatalogFlow", docs_url="/api/docs")
 
 
+def storage_help():
+    return (
+        f"The app runs as UID {os.geteuid()}:GID {os.getegid()}. "
+        "On the server, run: sudo docker compose run --rm --no-deps "
+        "--name CatalogFlow_storage-repair init-storage. "
+        "For existing root-owned runtime files, also repair ownership of catalogs, logs and parsed."
+    )
+
+
+@app.exception_handler(PermissionError)
+async def storage_permission_error(request: Request, exc: PermissionError):
+    path = redact(str(exc.filename or "runtime storage"))
+    return JSONResponse(
+        {"detail": f"CatalogFlow cannot access {path}. {storage_help()}"},
+        status_code=503,
+    )
+
+
+@app.exception_handler(sqlite3.Error)
+async def library_database_error(request: Request, exc: sqlite3.Error):
+    reason = redact(str(exc))
+    detail = f"The manufacturer library database is unavailable: {reason}."
+    if "readonly" in reason.lower() or "unable to open" in reason.lower():
+        detail += " " + storage_help()
+    return JSONResponse({"detail": detail}, status_code=503)
+
+
+@app.exception_handler(Exception)
+async def unexpected_server_error(request: Request, exc: Exception):
+    return JSONResponse(
+        {
+            "detail": "The server could not complete this request. Check pipeline-ui logs for the cause."
+        },
+        status_code=500,
+    )
+
+
 @app.middleware("http")
 async def same_origin(request: Request, call_next):
     if request.method in ("POST", "PUT", "DELETE"):
@@ -1595,6 +1634,13 @@ async def same_origin(request: Request, call_next):
 
 @app.get("/health")
 def health():
+    for name in ("catalogs", "logs", "parsed"):
+        path = ROOTS[name]
+        if not path.is_dir() or not os.access(path, os.W_OK | os.X_OK):
+            raise PermissionError(
+                errno.EACCES, "Runtime directory is not writable", str(path)
+            )
+    library().target()
     return {"status": "healthy"}
 
 

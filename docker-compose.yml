@@ -18,6 +18,24 @@ x-tools: &tools
   networks: [parser-internal, parser-edge]
 
 services:
+  init-storage:
+    container_name: CatalogFlow_init-storage
+    image: guhring-parser-tools:3
+    build:
+      context: ./scripts
+    user: "0:0"
+    entrypoint: ["python", "/scripts/prepare_runtime.py"]
+    environment:
+      LOCAL_UID: ${LOCAL_UID:-1000}
+      LOCAL_GID: ${LOCAL_GID:-1000}
+    volumes:
+      - ./catalogs:/catalogs
+      - ./parsed:/parsed
+      - ./logs:/logs
+      - ./scripts:/scripts:ro
+    network_mode: none
+    restart: "no"
+
   local-llm:
     container_name: CatalogFlow_local-llm
     image: ollama/ollama:${OLLAMA_VERSION:-0.32.5}
@@ -85,6 +103,8 @@ services:
     container_name: CatalogFlow_pipeline-ui
     <<: *tools
     depends_on:
+      init-storage:
+        condition: service_completed_successfully
       local-llm:
         condition: service_healthy
     entrypoint: ["python", "/scripts/pipeline_ui.py"]

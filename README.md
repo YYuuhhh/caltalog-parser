@@ -30,6 +30,10 @@ All service containers use the `CatalogFlow_` prefix: `CatalogFlow_mineru`,
 temporary jobs launched by Make targets use the same prefix. Compose service
 addresses such as `http://mineru:8000` remain valid.
 
+`CatalogFlow_init-storage` prepares writable catalog, log and output directories
+for the configured app user before the UI starts. Health checks verify the
+library is usable; storage permission errors are returned as readable API errors.
+
 ### Local CPU review and final validation
 
 New catalogs default to **local vision models for both stage 03 and stage 06**. All local requests force `num_gpu=0`; the local container has no GPU device allocation. Each task has a fresh page/tool context, the original PDF image, a fixed JSON schema and saved model execution evidence. There is no fallback to ChatGPT Work, the Platform API or Ollama cloud. Earlier saved Work runs keep their explicit choices.

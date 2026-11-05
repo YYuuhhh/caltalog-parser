@@ -15,6 +15,25 @@ docker compose up -d --build
 docker compose ps
 ```
 
+`CatalogFlow_init-storage` runs once before the UI starts. It prepares the
+writable runtime directories for `LOCAL_UID:LOCAL_GID`, including when Docker
+created the bind-mount folders as root. The UI health check verifies storage and
+library access instead of reporting a healthy process with a broken library.
+
+For an existing installation showing `Permission denied: /catalogs/library`,
+use the UID:GID reported by `sudo docker compose exec -T pipeline-ui id`:
+
+```bash
+# The default container identity is 1000:1000.
+sudo chown -R 1000:1000 catalogs logs parsed
+sudo docker compose run --rm --no-deps --name CatalogFlow_storage-repair init-storage
+sudo docker compose up -d --wait pipeline-ui
+```
+
+Reload the browser after permissions are repaired. Future startups prepare the
+runtime directories automatically. The initializer does not recursively scan
+catalog originals, extraction caches or model weights.
+
 Open **http://172.172.1.25:7777** from your browser. The server profile publishes
 `0.0.0.0:7777` to port 7861 inside the UI container. The internal port and health
 check stay at 7861. The extractor and Ollama host ports keep their loopback binds.

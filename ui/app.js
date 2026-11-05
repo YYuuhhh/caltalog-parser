@@ -270,13 +270,23 @@ async function api(path, options = {}) {
       ? undefined
       : { "Content-Type": "application/json", ...options.headers },
   });
-  const data = await response.json();
+  const body = await response.text();
+  let data;
+  try {
+    data = body ? JSON.parse(body) : null;
+  } catch {
+    throw new Error(
+      `${path.split("?")[0]} returned HTTP ${response.status} without a JSON response. Check pipeline-ui logs for the server error.`,
+    );
+  }
   if (!response.ok) {
     const detail =
-      typeof data.detail === "string"
+      typeof data?.detail === "string"
         ? data.detail
-        : JSON.stringify(data.detail);
-    throw new Error(detail || `Request failed (${response.status})`);
+        : JSON.stringify(data?.detail);
+    throw new Error(
+      `${path.split("?")[0]} (HTTP ${response.status}): ${detail || "Request failed"}`,
+    );
   }
   return data;
 }

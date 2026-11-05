@@ -3,6 +3,7 @@
 from __future__ import annotations
 import hashlib
 import json
+import os
 import sys
 import threading
 import time
@@ -21,6 +22,7 @@ import subscription_review as sr
 import subscription_worker as sw
 import extraction_quality as eq
 import catalog_registry as registry
+import prepare_runtime
 
 
 @pytest.fixture
@@ -57,6 +59,94 @@ def config(source, **changes):
         automatic_review=changes.pop("automatic_review", False),
         **changes,
     )
+
+
+@pytest.mark.parametrize("endpoint", ["/health", "/api/bootstrap", "/api/library"])
+def test_unwritable_catalog_mount_reports_error_and_recovers(workspace, endpoint):
+    roots, source, client = workspace
+    original = source.read_bytes()
+    mode = source.stat().st_mode
+    roots["catalogs"].chmod(0o555)
+    try:
+        response = client.get(endpoint)
+        assert response.status_code == 503, response.text
+        assert response.headers["content-type"].startswith("application/json")
+        assert (
+            "UID" in response.json()["detail"]
+            and "init-storage" in response.json()["detail"]
+        )
+        prepare_runtime.prepare(roots, os.getuid(), os.getgid())
+        recovered = client.get(endpoint)
+        assert recovered.status_code == 200, recovered.text
+        assert source.read_bytes() == original and source.stat().st_mode == mode
+    finally:
+        roots["catalogs"].chmod(0o755)
+
+
+@pytest.mark.parametrize("root", ["logs", "parsed"])
+def test_health_requires_writable_runtime_storage(workspace, root):
+    roots, _, client = workspace
+    roots[root].chmod(0o555)
+    try:
+        response = client.get("/health")
+        assert (
+            response.status_code == 503
+            and str(roots[root]) in response.json()["detail"]
+        )
+        prepare_runtime.prepare(roots, os.getuid(), os.getgid())
+        assert client.get("/health").json() == {"status": "healthy"}
+    finally:
+        roots[root].chmod(0o755)
+
+
+def test_readonly_library_database_is_repaired_without_losing_records(workspace):
+    roots, _, client = workspace
+    manufacturer = ui.library().add_manufacturer("Saved manufacturer")
+    db = roots["catalogs"] / "library/library.sqlite"
+    db.chmod(0o444)
+    try:
+        response = client.get("/api/library")
+        assert (
+            response.status_code == 503
+            and "readonly" in response.json()["detail"].lower()
+        )
+        prepare_runtime.prepare(roots, os.getuid(), os.getgid())
+        recovered = client.get("/api/library")
+        assert recovered.status_code == 200
+        assert any(
+            m["id"] == manufacturer["id"] for m in recovered.json()["manufacturers"]
+        )
+    finally:
+        db.chmod(0o644)
+
+
+def test_unexpected_bootstrap_failure_returns_json_without_exposing_traceback(
+    workspace, monkeypatch
+):
+    def broken_library():
+        raise RuntimeError("internal fixture failure")
+
+    monkeypatch.setattr(ui, "library", broken_library)
+    with TestClient(ui.app, raise_server_exceptions=False) as client:
+        response = client.get("/api/bootstrap")
+    assert response.status_code == 500
+    assert "pipeline-ui logs" in response.json()["detail"]
+    assert "internal fixture failure" not in response.text
+
+
+def test_runtime_initializer_refuses_symlinked_storage_without_touching_target(
+    workspace, tmp_path
+):
+    roots, _, _ = workspace
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "original.txt").write_text("original data")
+    mode = outside.stat().st_mode
+    (roots["catalogs"] / "library").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink"):
+        prepare_runtime.prepare(roots, os.getuid(), os.getgid())
+    assert (outside / "original.txt").read_text() == "original data"
+    assert outside.stat().st_mode == mode
 
 
 def task(tmp_path, stage="correctness", **options):
