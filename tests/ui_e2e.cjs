@@ -44,7 +44,7 @@ const base = process.env.PIPELINE_UI_URL || "http://127.0.0.1:7861";
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     await page.goto(base);
-    await page.locator("#run:enabled").waitFor();
+    await page.locator("#model-picker").waitFor();
     const boot = await (await page.request.get(base + "/api/bootstrap")).json();
     assert(boot.manufacturers.length >= 50);
     assert.equal(boot.defaults.languages, "en,ru,zh");
@@ -107,8 +107,13 @@ const base = process.env.PIPELINE_UI_URL || "http://127.0.0.1:7861";
       "local",
     );
     assert.equal(await page.locator("input[name=local_use_gpu]").count(), 0);
-    for (const name of ["model", "final_model"])
-      await page.locator(`select[name=${name}]`).selectOption("none");
+    for (const name of ["model", "final_model"]) {
+      await page.locator(`#${name}-picker`).click();
+      await page
+        .locator(`#${name}-model-menu`)
+        .getByRole("button", { name: "Choose No model", exact: true })
+        .click();
+    }
     assert(await page.locator("input[name=reasoning]").isDisabled());
     assert(await page.locator("input[name=final_reasoning]").isDisabled());
     assert(
@@ -308,11 +313,13 @@ const base = process.env.PIPELINE_UI_URL || "http://127.0.0.1:7861";
       "light",
     );
     await page.reload();
-    await page.locator("#run:enabled").waitFor();
+    await page.locator("#model-picker").waitFor();
     assert.equal(
       await page.locator("html").getAttribute("data-theme"),
       "light",
     );
+    await page.locator("select[name=review_provider]").selectOption("work");
+    await page.locator("select[name=final_provider]").selectOption("work");
     await page.locator("#theme-toggle").click();
     // Multi-file upload is real; each source keeps its own manufacturer control.
     const uploadFile = path.join(

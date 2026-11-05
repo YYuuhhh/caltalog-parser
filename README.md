@@ -60,6 +60,16 @@ mapping are skipped. Stage 06 can be disabled independently. Extraction,
 structuring, duplicate comparison and workbook integrity still run; any skipped
 model checks keep the catalog unvalidated. No cloud fallback is used.
 
+Local model menus show **✓ Installed**, **↓ Not installed**, and **? Server
+unavailable**. Missing models are greyed out with an **Install** button in the
+same row. Install explicitly downloads weights to the selected Ollama server;
+both stages show the shared progress and offer **Retry** after a failure.
+Verified vision models become selectable when installation finishes. Selecting
+a preset or opening a menu only checks metadata and never downloads weights.
+Start parsing after choosing installed models, or choose **No model** to proceed
+with the corresponding checks skipped. Work models remain account-based choices
+and do not install locally.
+
 Supply precise HTTPS manufacturer product/catalog URLs or an optional private SearXNG server for internet checks. HTML and bounded PDF evidence are fetched and saved for the local model. A citation can only support a passed internet check if its source was actually retrieved. Missing sources stay **unverified**, and unresolved findings keep a catalog unvalidated. Local model self-reported confidence does not establish correctness.
 
 Run a real selected-page test, including both models and final validation:

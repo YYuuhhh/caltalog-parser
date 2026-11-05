@@ -14,6 +14,7 @@ RUN python -m pip install \
       'cryptography>=43,<47' \
       'fastapi>=0.115,<1' \
       'httpx>=0.28,<1' \
+      'httpx2>=2,<3' \
       'jsonschema>=4.23,<5' \
       'lxml>=5,<7' \
       'langdetect>=1.0.9,<2' \

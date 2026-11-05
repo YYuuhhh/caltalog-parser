@@ -39,6 +39,7 @@ import workbench_outputs as outputs
 import review_notes
 import processing_control as control
 import local_review as local
+import local_model_install
 
 ROOTS = {
     name: Path(os.getenv(f"PIPELINE_{name.upper()}_ROOT", f"/{name}"))
@@ -1792,6 +1793,35 @@ def services(local_url: str = "http://local-llm:11434"):
 
 class LocalServerInput(BaseModel):
     url: str = "http://local-llm:11434"
+
+
+class LocalInstallInput(LocalServerInput):
+    model: str = Field(min_length=1, max_length=160)
+
+
+model_installer = local_model_install.Installer()
+
+
+@app.get("/api/local-model-installs")
+def local_model_installs(url: str = "http://local-llm:11434"):
+    try:
+        return {
+            "installs": model_installer.list(
+                url, ROOTS["logs"] / "local-model-installs"
+            )
+        }
+    except ValueError as exc:
+        raise HTTPException(400, redact(str(exc)))
+
+
+@app.post("/api/local-model-installs", status_code=202)
+def install_local_model(config: LocalInstallInput):
+    try:
+        return model_installer.start(
+            config.url, config.model, ROOTS["logs"] / "local-model-installs"
+        )
+    except ValueError as exc:
+        raise HTTPException(400, redact(str(exc)))
 
 
 @app.post("/api/local-models")

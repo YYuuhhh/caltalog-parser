@@ -18,6 +18,12 @@ let bootstrap,
 let queueState = { paused: false, active_run: null, queued_runs: [] };
 const pendingControls = new Set();
 const inputs = new Map();
+const modelPickers = new Map();
+let localInstalls = [],
+  localDiscoveryBusy = false,
+  localDiscoverySerial = 0;
+let installPollBusy = false,
+  localDiscoveryAt = 0;
 let pollBusy = false;
 const refreshedMappings = new Set();
 const runPanels = new Map();
@@ -285,7 +291,11 @@ function options(select, manufacturers, current) {
   select.value = current || manufacturers[0]?.id || "";
 }
 function buildField(container, name, label, type = "text", choices, hint) {
-  const box = node("label", type === "checkbox" ? "toggle-field" : "field");
+  const isModel = ["model", "final_model"].includes(name);
+  const box = node(
+    isModel ? "div" : "label",
+    type === "checkbox" ? "toggle-field" : "field",
+  );
   const input = document.createElement(type === "select" ? "select" : "input");
   input.name = name;
   if (type !== "select") input.type = type;
@@ -321,12 +331,15 @@ function buildField(container, name, label, type = "text", choices, hint) {
     }
   }
   const title = node("span", "field-title", label);
+  title.id = `${name}-label`;
+  input.setAttribute("aria-labelledby", title.id);
   title.append(helpButton(parameterHelp[name] || hint || label, label));
   if (type === "checkbox") box.append(input, title);
   else box.append(title, input);
   if (hint) box.append(node("small", "", hint));
   container.append(box);
   inputs.set(name, input);
+  if (isModel) buildModelPicker(name, box);
   input.addEventListener("change", refresh);
   if (name === "parser_language")
     input.addEventListener("change", () => {
@@ -353,6 +366,7 @@ function settings() {
   return data;
 }
 function applySettings(data) {
+  const previousServer = localServerUrl();
   data = { ...data };
   if (data.model === "chatgpt") data.model = bootstrap.defaults.model;
   if (data.final_model === "chatgpt")
@@ -385,6 +399,10 @@ function applySettings(data) {
     if (!(name in data))
       inputs.get(name).dataset.reasoning = bootstrap.defaults[name];
   syncLanguages();
+  if (previousServer !== localServerUrl()) {
+    resetLocalModels();
+    refreshLocalModels();
+  }
   refresh();
 }
 function configFor(catalog) {
@@ -567,7 +585,7 @@ function build() {
   };
   $("model-catalog-info").textContent = bootstrap.models.note;
   add("local-fields", "local_ram_gb", "Inference machine RAM", "select", [
-    ["32", "32 GB · 9B / 8B vision"],
+    ["32", "32 GB · 8B / 9B vision"],
     ["128", "128 GB · 32B vision"],
     ["750", "750 GB · 235B vision"],
   ]);
@@ -604,20 +622,15 @@ function build() {
     }
     refresh();
   });
-  $("local-model-refresh").onclick = async () => {
-    $("local-model-status").textContent =
-      "Checking server and vision capabilities…";
-    try {
-      bootstrap.local_llm = await api("/api/local-models", {
-        method: "POST",
-        body: JSON.stringify({ url: inputs.get("local_url").value }),
-      });
-      updateModels(true);
-      refresh();
-    } catch (error) {
-      showError(error);
-    }
-  };
+  $("local-model-refresh").onclick = () => refreshLocalModels();
+  let serverTimer;
+  inputs.get("local_url").addEventListener("input", () => {
+    clearTimeout(serverTimer);
+    resetLocalModels();
+    updateModels(true);
+    refresh();
+    serverTimer = setTimeout(() => refreshLocalModels(), 600);
+  });
   $("target-manufacturer").parentElement.append(
     helpButton(
       "One target manufacturer for parameter comparisons across the library. This does not determine the manufacturer of uploaded PDFs.",
@@ -757,8 +770,19 @@ function refresh() {
     ? `Selected pages · ${data.first_page} to ${data.last_page || "end"} · partial catalogs remain unvalidated`
     : "Full catalog · every PDF page";
   $("selected-count").textContent = `${selected.size} selected`;
-  $("run").disabled = !selected.size || [...selected.values()].some((v) => !v);
-  $("preview").disabled = $("run").disabled;
+  const missingModels = [
+    ["review_provider", "model"],
+    ["final_provider", "final_model"],
+  ].filter(
+    ([provider, name]) =>
+      data[provider] === "local" &&
+      data[name] !== "none" &&
+      !bootstrap.local_llm.models.some((model) => model.id === data[name]),
+  );
+  const invalidSelection =
+    !selected.size || [...selected.values()].some((v) => !v);
+  $("run").disabled = invalidSelection || missingModels.length > 0;
+  $("preview").disabled = invalidSelection;
   $("queue-summary").replaceChildren();
   let total = 0;
   for (const catalog of bootstrap.catalogs.filter((c) =>
@@ -790,10 +814,12 @@ function refresh() {
   $("model-catalog-info").hidden = $("model-refresh").hidden;
   inputs.get("automatic_review").closest("label").hidden =
     data.review_provider === "local" && data.final_provider === "local";
-  $("local-model-status").textContent = bootstrap.local_llm.available
-    ? `Local server connected · ${bootstrap.local_llm.models.length} installed vision models. No Work allowance is used for local tasks.`
-    : bootstrap.local_llm.detail ||
-      "Start the bundled Ollama service with make local-models. Check the server to list installed vision models.";
+  $("local-model-status").textContent = localDiscoveryBusy
+    ? "Checking local server and installed vision models…"
+    : bootstrap.local_llm.available
+      ? `Local server connected · ${bootstrap.local_llm.models.length} installed vision models. No Work allowance is used for local tasks.`
+      : bootstrap.local_llm.detail ||
+        "Local server unavailable. Start the local-llm service and check its address to install models.";
   $("review-mode-note").textContent =
     data.model === "none"
       ? "No evidence model: page reviews, internet verification and model-assisted mapping are skipped. Extraction and structuring still run; the catalog remains unvalidated."
@@ -806,11 +832,12 @@ function refresh() {
     data.final_model === "none"
       ? "No final model: workbook integrity still runs, but tool validation is skipped and the catalog remains unvalidated."
       : `${data.final_provider === "local" ? "Local" : "Work"} final validation receives fresh tool-specific evidence and the source drawing. No previous task history is reused.`;
-  $("reviewer-status").textContent =
-    data.model === "none"
+  $("reviewer-status").textContent = missingModels.length
+    ? "Install the selected local models from their menus, choose an installed model, or choose No model to continue unvalidated."
+    : data.model === "none"
       ? "Evidence model checks are disabled. No review requests will be sent."
       : data.review_provider === "local"
-        ? "Local LLM review selected. Use Check local server & models to verify availability."
+        ? "Local vision model installed and ready."
         : !data.automatic_review
           ? "Manual review selected. No automatic Work allowance is consumed."
           : bootstrap.reviewer.available
@@ -902,6 +929,7 @@ function localModelChoices() {
       choices.set(id, {
         id,
         label: id,
+        weights_gb: preset.weights_gb,
         reasoning_levels: id.includes("instruct")
           ? ["none"]
           : ["none", "medium"],
@@ -931,7 +959,13 @@ function updateModels(force = false) {
       const list = [...choices, ["none", "No model · leave unvalidated"]];
       input.replaceChildren(
         ...list.map(([value, label]) =>
-          Object.assign(node("option", "", label), { value }),
+          Object.assign(node("option", "", label), {
+            value,
+            disabled:
+              isLocal &&
+              value !== "none" &&
+              !bootstrap.local_llm.models.some((m) => m.id === value),
+          }),
         ),
       );
       input.value = list.some(([v]) => v === old)
@@ -943,6 +977,342 @@ function updateModels(force = false) {
   }
   updateReasoning("reasoning", "model");
   updateReasoning("final_reasoning", "final_model");
+  for (const name of ["model", "final_model"]) renderModelPicker(name);
+}
+
+function localServerUrl() {
+  return inputs.get("local_url").value.trim().replace(/\/$/, "");
+}
+function resetLocalModels() {
+  ++localDiscoverySerial;
+  bootstrap.local_llm = { presets: bootstrap.local_llm.presets, models: [] };
+  localInstalls = [];
+  localDiscoveryBusy = false;
+  localDiscoveryAt = 0;
+}
+function closeModelPickers() {
+  for (const picker of modelPickers.values()) {
+    picker.panel.hidden = true;
+    picker.trigger.setAttribute("aria-expanded", "false");
+    picker.root.classList.remove("open");
+  }
+}
+function buildModelPicker(name, box) {
+  const root = node("div", "model-picker");
+  root.dataset.field = name;
+  const trigger = button(
+    "",
+    () => {
+      const opening = panel.hidden;
+      closeModelPickers();
+      if (!opening) return;
+      panel.hidden = false;
+      root.classList.add("open");
+      trigger.setAttribute("aria-expanded", "true");
+      const overflow =
+        root.getBoundingClientRect().left + panel.offsetWidth >
+        window.innerWidth - 20;
+      panel.style.left = overflow ? "auto" : "0";
+      panel.style.right = overflow ? "0" : "auto";
+      const rect = root.getBoundingClientRect();
+      const below = window.innerHeight - rect.bottom - 20;
+      const above = rect.top - 20;
+      const upward = below < panel.offsetHeight && above > below;
+      panel.style.top = upward ? "auto" : "calc(100% + 7px)";
+      panel.style.bottom = upward ? "calc(100% + 7px)" : "auto";
+      list.style.maxHeight = `${Math.max(100, Math.min(390, (upward ? above : below) - 95))}px`;
+      if (Date.now() - localDiscoveryAt > 15000) refreshLocalModels();
+    },
+    "model-picker-trigger",
+  );
+  trigger.id = `${name}-picker`;
+  trigger.setAttribute("aria-labelledby", `${name}-label ${name}-selection`);
+  trigger.setAttribute("aria-haspopup", "dialog");
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.setAttribute("aria-controls", `${name}-model-menu`);
+  const icon = node("span", "model-state-icon");
+  const selection = node("span", "model-selection");
+  selection.id = `${name}-selection`;
+  trigger.append(icon, selection, node("span", "model-chevron", "⌄"));
+  const panel = node("div", "model-menu");
+  panel.id = `${name}-model-menu`;
+  panel.hidden = true;
+  panel.setAttribute("role", "dialog");
+  panel.setAttribute("aria-labelledby", `${name}-label`);
+  const heading = node("div", "model-menu-heading");
+  heading.append(
+    node("strong", "", "Local vision models"),
+    button("Refresh", () => refreshLocalModels(), "model-refresh-inline"),
+  );
+  const status = node("p", "model-menu-status");
+  status.setAttribute("role", "status");
+  const list = node("div", "model-menu-list");
+  list.setAttribute("role", "list");
+  panel.append(heading, status, list);
+  panel.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      closeModelPickers();
+      trigger.focus();
+    }
+    if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      const buttons = [...panel.querySelectorAll("button:not(:disabled)")];
+      let index = buttons.indexOf(document.activeElement);
+      index =
+        event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? buttons.length - 1
+            : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) %
+              buttons.length;
+      buttons[index]?.focus();
+      event.preventDefault();
+    }
+  });
+  trigger.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      if (panel.hidden) trigger.click();
+      panel.querySelector("button:not(:disabled)")?.focus();
+      event.preventDefault();
+    }
+  });
+  root.append(trigger, panel);
+  box.append(root);
+  modelPickers.set(name, {
+    root,
+    trigger,
+    panel,
+    list,
+    status,
+    icon,
+    selection,
+  });
+}
+function modelState(id) {
+  if (id === "none")
+    return { icon: "∅", text: "Model checks disabled", installed: true };
+  const job = localInstalls.find((j) => j.model === id);
+  if (bootstrap.local_llm.models.some((m) => m.id === id))
+    return { icon: "✓", text: "Installed", installed: true };
+  if (job && ["queued", "downloading"].includes(job.status))
+    return {
+      icon: "◌",
+      text: job.percent == null ? job.message : `Installing ${job.percent}%`,
+      job,
+      active: true,
+    };
+  if (job && ["failed", "interrupted"].includes(job.status))
+    return { icon: "!", text: job.error || job.message, job, failed: true };
+  return bootstrap.local_llm.available
+    ? { icon: "↓", text: "Not installed" }
+    : {
+        icon: "?",
+        text: localDiscoveryBusy
+          ? "Checking installation…"
+          : "Server unavailable",
+      };
+}
+function renderModelPicker(name) {
+  const picker = modelPickers.get(name);
+  if (!picker) return;
+  const input = inputs.get(name);
+  const isLocal =
+    inputs.get(name === "model" ? "review_provider" : "final_provider")
+      .value === "local";
+  input.hidden = isLocal;
+  picker.root.hidden = !isLocal;
+  if (!isLocal) {
+    picker.panel.hidden = true;
+    picker.trigger.setAttribute("aria-expanded", "false");
+    picker.root.classList.remove("open");
+    return;
+  }
+  const current = modelState(input.value);
+  picker.trigger.classList.toggle("unavailable", !current.installed);
+  picker.trigger.title = current.text;
+  picker.selection.textContent =
+    input.value === "none" ? "No model · leave unvalidated" : input.value;
+  picker.icon.textContent = current.icon;
+  picker.icon.classList.toggle("installed", current.installed);
+  picker.status.textContent = localDiscoveryBusy
+    ? "Checking server…"
+    : bootstrap.local_llm.available
+      ? "✓ Installed · ↓ Not installed. Install downloads to the selected server."
+      : "Server unavailable. Check the local server address to enable installation.";
+  const choices = [...localModelChoices(), { id: "none" }];
+  if (!choices.some((m) => m.id === input.value) && input.value)
+    choices.unshift({ id: input.value });
+  const signature = JSON.stringify([
+    choices,
+    input.value,
+    localInstalls,
+    bootstrap.local_llm.available,
+  ]);
+  if (picker.signature === signature) return;
+  picker.signature = signature;
+  const focused = picker.list.contains(document.activeElement)
+    ? document.activeElement.dataset
+    : null;
+  picker.list.replaceChildren(
+    ...choices.map((model) => {
+      const state = modelState(model.id);
+      const row = node(
+        "div",
+        `model-entry${state.installed ? " installed" : " unavailable"}${model.id === input.value ? " selected" : ""}`,
+      );
+      row.dataset.model = model.id;
+      row.setAttribute("role", "listitem");
+      const choose = button(
+        "",
+        () => {
+          input.value = model.id;
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+          closeModelPickers();
+          picker.trigger.focus();
+        },
+        "model-choice",
+      );
+      choose.dataset.model = model.id;
+      choose.dataset.action = "choose";
+      choose.disabled = !state.installed;
+      choose.setAttribute(
+        "aria-label",
+        `Choose ${model.id === "none" ? "No model" : model.id}`,
+      );
+      choose.setAttribute("aria-pressed", String(model.id === input.value));
+      const text = node("span", "model-choice-text");
+      text.append(
+        node(
+          "strong",
+          "",
+          model.id === "none"
+            ? "No model · leave unvalidated"
+            : model.label || model.id,
+        ),
+        node(
+          "small",
+          "",
+          `${state.text}${model.weights_gb ? ` · ≈${model.weights_gb} GB` : ""}`,
+        ),
+      );
+      choose.append(node("span", "model-state-icon", state.icon), text);
+      row.append(choose);
+      if (model.id !== "none" && !state.installed) {
+        const install = button(
+          state.active ? "Installing…" : state.failed ? "Retry" : "Install",
+          () => installModel(model.id),
+          "model-install",
+        );
+        install.dataset.model = model.id;
+        install.dataset.action = "install";
+        install.setAttribute(
+          "aria-label",
+          `${state.failed ? "Retry installing" : "Install"} ${model.id}`,
+        );
+        install.disabled =
+          state.active ||
+          !bootstrap.local_llm.available ||
+          localInstalls.some((j) =>
+            ["queued", "downloading"].includes(j.status),
+          );
+        row.append(install);
+      }
+      if (state.active) {
+        const progress = node("progress", "model-install-progress");
+        progress.max = 100;
+        if (state.job.percent != null) progress.value = state.job.percent;
+        progress.setAttribute("aria-label", `Installing ${model.id}`);
+        row.append(progress);
+      }
+      return row;
+    }),
+  );
+  if (focused?.model) {
+    [...picker.list.querySelectorAll("button")]
+      .find(
+        (b) =>
+          b.dataset.model === focused.model &&
+          b.dataset.action === focused.action,
+      )
+      ?.focus();
+  }
+}
+async function refreshLocalModels() {
+  const url = localServerUrl(),
+    serial = ++localDiscoverySerial;
+  localDiscoveryBusy = true;
+  refresh();
+  try {
+    const [metadata, progress] = await Promise.all([
+      api("/api/local-models", {
+        method: "POST",
+        body: JSON.stringify({ url }),
+      }),
+      api("/api/local-model-installs?url=" + encodeURIComponent(url)),
+    ]);
+    if (serial !== localDiscoverySerial || url !== localServerUrl()) return;
+    bootstrap.local_llm = { ...metadata, url };
+    localInstalls = progress.installs;
+    localDiscoveryAt = Date.now();
+  } catch (error) {
+    if (serial === localDiscoverySerial)
+      bootstrap.local_llm = {
+        presets: bootstrap.local_llm.presets,
+        models: [],
+        available: false,
+        detail: error.message,
+        url,
+      };
+  } finally {
+    if (serial === localDiscoverySerial) {
+      localDiscoveryBusy = false;
+      updateModels(true);
+      refresh();
+    }
+  }
+}
+async function installModel(model) {
+  const url = localServerUrl();
+  try {
+    const job = await api("/api/local-model-installs", {
+      method: "POST",
+      body: JSON.stringify({ url, model }),
+    });
+    if (url !== localServerUrl()) return;
+    localInstalls = [job, ...localInstalls.filter((j) => j.model !== model)];
+    refresh();
+    pollModelInstalls();
+  } catch (error) {
+    showError(error);
+  }
+}
+async function pollModelInstalls() {
+  if (installPollBusy || localDiscoveryBusy || !bootstrap.local_llm.available)
+    return;
+  installPollBusy = true;
+  const url = localServerUrl();
+  try {
+    const result = await api(
+      "/api/local-model-installs?url=" + encodeURIComponent(url),
+    );
+    if (url !== localServerUrl()) return;
+    const completed = result.installs.some(
+      (j) =>
+        j.status === "installed" &&
+        (!localInstalls.some(
+          (old) => old.id === j.id && old.status === "installed",
+        ) ||
+          (!bootstrap.local_llm.models.some((m) => m.id === j.model) &&
+            Date.now() - Date.parse(j.updated_at) < 10000)),
+    );
+    localInstalls = result.installs;
+    if (completed) await refreshLocalModels();
+    else refresh();
+  } catch (error) {
+    $("local-model-status").textContent = error.message;
+  } finally {
+    installPollBusy = false;
+  }
 }
 function showView(view) {
   $("pipeline-view").hidden = view !== "pipeline";
@@ -2122,8 +2492,16 @@ async function openTask(id) {
   }
 }
 async function init() {
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".model-picker")) closeModelPickers();
+  });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") hideHelp();
+    if (event.key === "Escape") {
+      hideHelp();
+      const open = [...modelPickers.values()].find((p) => !p.panel.hidden);
+      closeModelPickers();
+      open?.trigger.focus();
+    }
   });
   window.addEventListener("scroll", hideHelp, true);
   const savedTheme = localStorage.getItem("catalogflow-theme") || "dark";
@@ -2144,6 +2522,7 @@ async function init() {
   try {
     bootstrap = await api("/api/bootstrap");
     build();
+    refreshLocalModels();
     await loadMapping();
     await poll();
     $("run-select").onchange = () => {
@@ -2418,6 +2797,7 @@ async function init() {
     await updateServices();
     setInterval(() => poll(), 3000);
     setInterval(() => updateServices().catch(showError), 15000);
+    setInterval(() => pollModelInstalls(), 1500);
   } catch (error) {
     showError(error);
   }
