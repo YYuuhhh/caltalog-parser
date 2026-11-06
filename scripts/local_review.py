@@ -163,6 +163,85 @@ def health(url):
         return {"available": False}
 
 
+def load_options(config):
+    if config.get("use_gpu"):
+        raise ValueError("Local catalog review is CPU-only.")
+    return {
+        "num_ctx": config.get("context_tokens", 32768),
+        "num_gpu": 0,
+        "use_mmap": not config.get("load_into_ram", True),
+    }
+
+
+def load_model(client, url, model, config):
+    """An empty chat loads weights without generating or sharing task context."""
+    timeout = config.get("load_timeout", 7200)
+    if not isinstance(timeout, (int, float)) or not 10 <= timeout <= 86400:
+        raise ValueError("Model load timeout must be between 10 and 86400 seconds.")
+    started = time.monotonic()
+    try:
+        response = checked(
+            client.post(
+                url + "/api/chat",
+                json={
+                    "model": model,
+                    "messages": [],
+                    "stream": False,
+                    "keep_alive": -1 if config.get("keep_loaded", True) else "30m",
+                    "options": load_options(config),
+                },
+                timeout=(10, timeout),
+                allow_redirects=False,
+            )
+        )
+        if (
+            response.get("model") != model
+            or not response.get("done")
+            or response.get("done_reason") != "load"
+        ):
+            raise ValueError("The local server did not confirm model loading.")
+    except (requests.RequestException, ValueError) as exc:
+        raise RuntimeError(
+            f"Loading {model} failed after {time.monotonic() - started:.1f}s: {exc}. "
+            "For slow disks, increase OLLAMA_LOAD_TIMEOUT on the inference server and the model load timeout in the UI. Check available RAM and the Ollama log if loading still fails."
+        ) from exc
+    return time.monotonic() - started
+
+
+def preload(folder):
+    request = json.loads((folder / "request.json").read_text())
+    model, config = request["model"], request["local"]
+    state = {
+        "model": model,
+        "status": "loading",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "load_timeout": config.get("load_timeout", 7200),
+        "load_into_ram": config.get("load_into_ram", True),
+    }
+    review.atomic_json(folder / "state.json", state)
+    try:
+        url = validate_url(config["url"])
+        validate_model(model, "none")
+        with session(url) as client:
+            describe(client, url, model)
+            elapsed = load_model(client, url, model, config)
+        state.update(
+            status="ready",
+            elapsed_seconds=round(elapsed, 2),
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except Exception as exc:
+        state.update(
+            status="failed",
+            error=str(exc)[:2000],
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        review.atomic_json(folder / "state.json", state)
+        raise
+    review.atomic_json(folder / "state.json", state)
+    return state
+
+
 class Text(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -383,7 +462,7 @@ def execute(folder):
     url = validate_url(config["url"])
     validate_model(request["model"], request["reasoning"])
     with session(url) as client:
-        deadline = time.monotonic() + request.get("timeout", 1800)
+        deadline = time.monotonic() + config.get("load_timeout", 7200)
         waiting_logged = False
         while True:
             catalog = checked(
@@ -444,17 +523,16 @@ def execute(folder):
                 "Local context budget exceeded. Increase context tokens or reduce RAW cells per task; no evidence was truncated."
             )
         options = {
-            "num_ctx": context,
+            **load_options(config),
             "num_predict": output,
             "temperature": config["temperature"],
-            "num_gpu": 0,
         }
         if config.get("use_gpu"):
             raise ValueError("Local catalog review is CPU-only.")
         payload = {
             "model": request["model"],
             "stream": False,
-            "keep_alive": "5m" if config.get("keep_loaded", True) else 0,
+            "keep_alive": -1 if config.get("keep_loaded", True) else 0,
             "format": json.loads((folder / "schema.json").read_text()),
             "messages": [
                 {
@@ -488,6 +566,13 @@ def execute(folder):
             "work_calls": 0,
         }
         review.atomic_json(folder / "execution.json", execution)
+        execution["load_seconds"] = load_model(client, url, request["model"], config)
+        execution["load_options"] = load_options(config)
+        execution["load_timeout_seconds"] = config.get("load_timeout", 7200)
+        review.atomic_json(folder / "execution.json", execution)
+        # Cold HDD loading has its own budget; each fresh review gets its full
+        # response timeout after the weights are ready.
+        deadline = time.monotonic() + request.get("timeout", 1800)
         response = checked(
             client.post(
                 url + "/api/chat",
@@ -521,9 +606,14 @@ def execute(folder):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task", type=Path, required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--task", type=Path)
+    mode.add_argument("--preload", type=Path)
     args = parser.parse_args()
     try:
+        if args.preload:
+            print(json.dumps(preload(args.preload)))
+            raise SystemExit(0)
         outcome = execute(args.task)
         print(
             json.dumps(
@@ -535,5 +625,6 @@ if __name__ == "__main__":
             )
         )
     except Exception as exc:
-        review.atomic_json(args.task / "error.json", {"error": str(exc)})
+        if args.task:
+            review.atomic_json(args.task / "error.json", {"error": str(exc)})
         raise SystemExit("Local review failed: " + str(exc))

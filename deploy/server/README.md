@@ -87,3 +87,20 @@ bounded `error-response.json` beside it. The stoppage reason includes the failed
 page and parser error. Detailed upstream tracebacks remain in
 `logs/mineru-upstream.log`; a passing `/health` response from older images does
 not prove the OCR dependencies can load.
+
+## Slow model loading from HDD
+
+The model server now defaults to `OLLAMA_LOAD_TIMEOUT=2h`. Apply updated Compose
+settings without rebuilding images or deleting weights:
+
+```bash
+git pull --ff-only
+sudo docker compose up -d --force-recreate local-llm pipeline-ui
+```
+
+The UI defaults to preloading while parsing, loading weights fully into CPU RAM,
+and keeping weights resident. Model loading gets its own 7200-second budget;
+each review response gets its full response timeout after loading. For an
+existing saved run, these new options receive the defaults on Resume. To change
+them explicitly, use Reuse settings and start with the updated settings.
+The model-loading card reports elapsed time, readiness or the failure reason.

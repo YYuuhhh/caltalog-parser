@@ -60,3 +60,19 @@ cloud model or silently treated as successful.
 The 235B model has not been loaded or benchmarked on this workstation. Container
 startup with no weights and CPU inference with an installed small model can be
 tested locally; large-model throughput must be measured on the target server.
+
+## HDD loading timeout
+
+`OLLAMA_LOAD_TIMEOUT=2h` allows long load stalls on slow disks. Recreate the
+container after changing this value; a simple restart does not apply changed
+Compose environment settings:
+
+```bash
+sudo docker compose up -d --force-recreate local-llm
+```
+
+The workbench starts an empty CPU-only preload request alongside PDF extraction,
+then waits for the weights before starting review's response timeout. Its separate
+Model load timeout also defaults to two hours. Keep-loaded mode pins the current
+model with `keep_alive=-1`; only one selected model loads at a time. Loading fully
+into RAM requires enough free memory for weights, context and other services.

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -105,7 +106,12 @@ def test_resume_reuses_only_exact_completed_evidence_and_model(tmp_path):
         model=task["model"],
         reasoning="none",
         provider="local",
-        local={**config, "keep_loaded": False},
+        local={
+            **config,
+            "keep_loaded": False,
+            "load_timeout": 7200,
+            "load_into_ram": True,
+        },
         confidence_threshold=0.9,
     )
     reused = review.reusable_result(
@@ -225,6 +231,7 @@ def test_download_presets_fit_requested_ram_and_keep_a_separate_final_model():
 
 def test_real_http_adapter_sends_cpu_images_and_fresh_schema_bound_tasks(tmp_path):
     received = []
+    loads = []
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -240,8 +247,13 @@ def test_real_http_adapter_sends_cpu_images_and_fresh_schema_bound_tasks(tmp_pat
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             if self.path == "/api/show":
                 response = {"capabilities": ["vision", "thinking"]}
+            elif body.get("messages") == []:
+                loads.append(body)
+                time.sleep(2)
+                response = {"model": body["model"], "done": True, "done_reason": "load"}
             else:
                 received.append(body)
+                time.sleep(2)
                 schema = body["format"]["properties"]
                 names = schema["checks"]["items"]["properties"]["check"]["enum"]
                 result = {
@@ -300,6 +312,9 @@ def test_real_http_adapter_sends_cpu_images_and_fresh_schema_bound_tasks(tmp_pat
                 local=config,
             )
             folder = tmp_path / "tasks" / task["task_id"]
+            # Loading plus generation exceeds the review-only budget.
+            task["timeout"] = 3
+            review.atomic_json(folder / "request.json", task)
             outcome = local.execute(folder)
             ids.append(outcome["task_id"])
             assert outcome["status"] == (
@@ -311,6 +326,14 @@ def test_real_http_adapter_sends_cpu_images_and_fresh_schema_bound_tasks(tmp_pat
             )
             assert execution["use_gpu"] is False and execution["fresh_context"]
         assert ids[0] != ids[1]
+        assert len(loads) == 2
+        for loaded, generated in zip(loads, received):
+            assert loaded["options"] == {
+                key: generated["options"][key] for key in loaded["options"]
+            }
+            assert loaded["options"]["use_mmap"] is False
+            assert loaded["keep_alive"] == generated["keep_alive"] == -1
+            assert "prompt" not in loaded and "format" not in loaded
         for payload in received:
             assert payload["options"]["num_gpu"] == 0
             assert (
@@ -321,3 +344,45 @@ def test_real_http_adapter_sends_cpu_images_and_fresh_schema_bound_tasks(tmp_pat
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_preload_timeout_is_separate_and_cpu_options_are_consistent():
+    calls = []
+
+    class Client:
+        def post(self, url, **kwargs):
+            calls.append((url, kwargs))
+
+            class Response:
+                ok, is_redirect = True, False
+
+                def json(self):
+                    return {
+                        "model": "qwen3-vl:32b-thinking-bf16",
+                        "done": True,
+                        "done_reason": "load",
+                    }
+
+            return Response()
+
+    config = {
+        "load_timeout": 7200,
+        "context_tokens": 32768,
+        "use_gpu": False,
+        "load_into_ram": True,
+        "keep_loaded": True,
+    }
+    local.load_model(
+        Client(), "http://127.0.0.1:11434", "qwen3-vl:32b-thinking-bf16", config
+    )
+    _, request = calls[0]
+    assert request["timeout"] == (10, 7200)
+    assert request["json"]["messages"] == []
+    assert request["json"]["options"] == {
+        "num_ctx": 32768,
+        "num_gpu": 0,
+        "use_mmap": False,
+    }
+    assert local.load_options({**config, "load_into_ram": False})["use_mmap"] is True
+    with pytest.raises(ValueError, match="CPU-only"):
+        local.load_options({"use_gpu": True})

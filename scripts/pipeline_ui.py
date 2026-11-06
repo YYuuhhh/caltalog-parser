@@ -132,6 +132,9 @@ class Settings(BaseModel):
     local_output_tokens: int = Field(4096, ge=512, le=16384)
     local_use_gpu: Literal[False] = False
     local_keep_loaded: bool = True
+    local_preload: bool = True
+    local_load_timeout: int = Field(7200, ge=10, le=86400)
+    local_load_into_ram: bool = True
     local_temperature: float = Field(0.2, ge=0, le=2, allow_inf_nan=False)
     local_source_urls: str = Field("", max_length=4000)
     local_search_url: str = ""
@@ -192,6 +195,8 @@ class Settings(BaseModel):
             "output_tokens": self.local_output_tokens,
             "use_gpu": self.local_use_gpu,
             "keep_loaded": self.local_keep_loaded,
+            "load_timeout": self.local_load_timeout,
+            "load_into_ram": self.local_load_into_ram,
             "temperature": self.local_temperature,
             "source_urls": self.local_source_urls,
             "search_url": self.local_search_url,
@@ -479,6 +484,7 @@ class Jobs:
         self.cancelled = threading.Event()
         self.pending = deque()
         self.worker = None
+        self.model_loader = None
 
     def control_file(self, job):
         return self.folder(job) / "control.json"
@@ -572,7 +578,102 @@ class Jobs:
         state["files"] = self.files(job)
         state["confidence"] = outputs.confidence(state)
         self.extraction_progress(job, state)
+        try:
+            state["model_load"] = json.loads(
+                (self.folder(job) / "model-load/state.json").read_text()
+            )
+        except (OSError, ValueError):
+            pass
         return state
+
+    def start_model_load(self, job, config, model):
+        if not config.local_preload or not config.local_keep_loaded or model == "none":
+            return
+        with self.lock:
+            current = self.model_loader
+            if current and current["job"] == job and current["model"] == model:
+                return
+            if current and current["process"].poll() is None:
+                raise RuntimeError(
+                    "Another local model is still loading. Only one model may load at a time."
+                )
+            folder = self.folder(job) / "model-load"
+            review.atomic_json(
+                folder / "request.json",
+                {"model": model, "local": config.local_settings()},
+            )
+            review.atomic_json(
+                folder / "state.json",
+                {
+                    "status": "queued",
+                    "model": model,
+                    "started_at": now(),
+                    "load_timeout": config.local_load_timeout,
+                    "load_into_ram": config.local_load_into_ram,
+                },
+            )
+            env = {k: v for k, v in os.environ.items() if not k.startswith("OPENAI_")}
+            with (folder / "load.log").open("a") as log:
+                process = subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(SCRIPTS / "local_review.py"),
+                        "--preload",
+                        str(folder),
+                    ],
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    start_new_session=True,
+                )
+            self.model_loader = {
+                "job": job,
+                "model": model,
+                "process": process,
+                "folder": folder,
+            }
+
+    def wait_model_load(self, job, model):
+        loader = self.model_loader
+        if not loader or loader["job"] != job or loader["model"] != model:
+            return
+        while loader["process"].poll() is None:
+            if self.cancelled.is_set():
+                raise InterruptedError("Stopped by user.")
+            self.checkpoint(job)
+            self.cancelled.wait(0.2)
+        if loader["process"].returncode:
+            try:
+                detail = json.loads((loader["folder"] / "state.json").read_text()).get(
+                    "error", "Model preload failed."
+                )
+            except (OSError, ValueError):
+                detail = "Model preload failed. See model-load/load.log."
+            raise RuntimeError(redact(detail))
+
+    def stop_model_load(self, job):
+        loader = self.model_loader
+        if not loader or loader["job"] != job:
+            return
+        process = loader["process"]
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=5)
+            except ProcessLookupError:
+                pass
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+        path = loader["folder"] / "state.json"
+        try:
+            state = json.loads(path.read_text())
+            if state.get("status") in ("loading", "queued"):
+                state.update(status="stopped", completed_at=now())
+                review.atomic_json(path, state)
+        except (OSError, ValueError):
+            pass
+        self.model_loader = None
 
     def extraction_progress(self, job, state):
         stage = next((s for s in state["stages"] if s["id"] == "parse"), None)
@@ -1108,6 +1209,12 @@ class Jobs:
     def review_stage(self, job, stage, config, state, output):
         import fitz
 
+        if (
+            config.final_provider if stage == "final" else config.review_provider
+        ) == "local":
+            self.wait_model_load(
+                job, config.final_model if stage == "final" else config.model
+            )
         folder = self.folder(job)
         manifest = yaml.safe_load((folder / "catalog.yaml").read_text())
         local_task = (
@@ -1462,6 +1569,10 @@ class Jobs:
             commands = {
                 s["id"]: s["commands"] for s in compile_stages(config, job, pages)
             }
+            if config.review_provider == "local" and config.model != "none":
+                self.start_model_load(job, config, config.model)
+            elif config.final_provider == "local" and config.final_model != "none":
+                self.start_model_load(job, config, config.final_model)
             for progress in state["stages"]:
                 if progress["status"] == "completed":
                     continue
@@ -1469,6 +1580,8 @@ class Jobs:
                     raise InterruptedError("Stopped by user.")
                 self.checkpoint(job)
                 stage = progress["id"]
+                if stage == "structure" and config.final_provider == "local":
+                    self.start_model_load(job, config, config.final_model)
                 state["current_stage"] = stage
                 if not review_enabled(config, stage):
                     progress.update(
@@ -1575,6 +1688,7 @@ class Jobs:
                 if s["status"] == "running":
                     s["status"] = "failed"
         finally:
+            self.stop_model_load(job)
             for s in state["stages"]:
                 if s["status"] in ("running", "queued"):
                     s["status"] = "not_run"
@@ -1644,6 +1758,15 @@ class Jobs:
                 raise HTTPException(409, "This run is not active or queued.")
             review.atomic_json(self.control_file(job), stop_control)
             self.cancelled.set()
+            if (
+                self.model_loader
+                and self.model_loader["job"] == job
+                and self.model_loader["process"].poll() is None
+            ):
+                try:
+                    os.killpg(self.model_loader["process"].pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
             state = self.read(job)
             for task in state.get("review_tasks", []):
                 if task["status"] in ("waiting", "cancelled"):

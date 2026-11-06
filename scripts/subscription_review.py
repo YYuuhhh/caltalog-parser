@@ -289,8 +289,11 @@ def reusable_result(
             ):
                 continue
             if provider == "local":
-                old = {k: v for k, v in request["local"].items() if k != "keep_loaded"}
-                current = {k: v for k, v in local.items() if k != "keep_loaded"}
+                runtime_only = {"keep_loaded", "load_timeout", "load_into_ram"}
+                old = {
+                    k: v for k, v in request["local"].items() if k not in runtime_only
+                }
+                current = {k: v for k, v in local.items() if k not in runtime_only}
                 if old != current:
                     continue
             validate_evidence(request, folder)

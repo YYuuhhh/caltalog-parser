@@ -49,6 +49,13 @@ const stages = [
     estimated: true,
     detail: "5/10 pages saved",
   };
+  run.model_load = {
+    status: "loading",
+    model: "qwen3-vl:32b-thinking-bf16",
+    started_at: new Date().toISOString(),
+    load_timeout: 7200,
+    load_into_ram: true,
+  };
   const output = path.resolve(__dirname, "../logs/stage-progress-test/browser");
   await fs.mkdir(output, { recursive: true });
   const bar = (id) =>
@@ -88,6 +95,33 @@ const stages = [
     );
     await page.goto(base);
     await bar("parse").waitFor();
+    assert(await page.locator("input[name=local_preload]").isChecked());
+    assert(await page.locator("input[name=local_load_into_ram]").isChecked());
+    assert.equal(
+      await page.locator("input[name=local_load_timeout]").inputValue(),
+      "7200",
+    );
+    await page.locator("input[name=local_keep_loaded]").uncheck();
+    assert(await page.locator("input[name=local_preload]").isDisabled());
+    await page.locator("input[name=local_keep_loaded]").check();
+    assert(await page.locator("input[name=local_preload]").isEnabled());
+    assert(
+      (await page.locator("#model-load-status").textContent()).includes(
+        "Loading local model",
+      ),
+    );
+    assert(
+      (await page.locator("#model-load-status").textContent()).includes(
+        "7200s",
+      ),
+    );
+    assert.equal(
+      await page.locator("#model-load-status progress").getAttribute("value"),
+      null,
+      "Loading progress has no invented byte percentage",
+    );
+    await page.locator("#extract").scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(output, "preload.png") });
     assert.equal(
       await page.locator(".stage-card > .stage-mini-progress").count(),
       7,
@@ -121,11 +155,20 @@ const stages = [
       "45",
     );
     run.stages[1].status = "completed";
+    run.model_load = {
+      ...run.model_load,
+      status: "ready",
+      elapsed_seconds: 600,
+    };
     run.stages[2].status = "running";
     run.stages[2].started_at = new Date(Date.now() - 30000).toISOString();
     run.current_stage = "raw";
     await waitFor(
       async () => Number(await bar("raw").getAttribute("aria-valuenow")) > 0,
+    );
+    assert.equal(
+      await page.locator("#model-load-status").getAttribute("data-status"),
+      "ready",
     );
     assert((await bar("raw").getAttribute("aria-valuetext")).includes("≈"));
     assert(Number(await bar("raw").getAttribute("aria-valuenow")) < 100);
@@ -153,6 +196,11 @@ const stages = [
       "Paused estimates must freeze",
     );
     run.status = "failed";
+    run.model_load = {
+      ...run.model_load,
+      status: "failed",
+      error: "Fixture: cold model load timed out",
+    };
     run.stages[2].status = "failed";
     run.stoppage = {
       ...run.stoppage,
@@ -166,6 +214,11 @@ const stages = [
           .count(),
     );
     assert(Number(await bar("raw").getAttribute("aria-valuenow")) < 100);
+    assert(
+      (await page.locator("#model-load-status").textContent()).includes(
+        "cold model load timed out",
+      ),
+    );
     run.status = "running";
     run.stoppage = null;
     for (const stage of run.stages)
@@ -196,11 +249,13 @@ const stages = [
           ? "skipped"
           : "completed";
     run.status = "quality_blocked";
+    run.model_load = { ...run.model_load, status: "ready" };
     run.stoppage = null;
     await waitFor(async () =>
       (await bar("final").getAttribute("aria-valuetext")).includes("Skipped"),
     );
     assert.equal(await bar("final").getAttribute("aria-valuenow"), "0");
+    assert(await page.locator("#model-load-status").isHidden());
     assert(
       (await bar("final").getAttribute("aria-valuetext")).includes("Skipped"),
     );

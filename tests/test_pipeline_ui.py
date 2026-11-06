@@ -1658,6 +1658,57 @@ def test_confidence_aggregates_page_minima_and_reports_incomplete_scope():
     assert wo.confidence({})["average"] is None
 
 
+@pytest.mark.parametrize(
+    "review_provider,model,final_provider,final_model,expected",
+    [
+        (
+            "local",
+            "qwen3-vl:8b-instruct",
+            "local",
+            "qwen3.5:9b",
+            "qwen3-vl:8b-instruct",
+        ),
+        ("work", "gpt-6.1-sol", "local", "qwen3.5:9b", "qwen3.5:9b"),
+        ("work", "gpt-6.1-sol", "work", "gpt-6.1-sol", None),
+        ("local", "none", "local", "none", None),
+    ],
+)
+def test_first_local_model_preload_starts_before_extraction(
+    workspace,
+    monkeypatch,
+    review_provider,
+    model,
+    final_provider,
+    final_model,
+    expected,
+):
+    _, source, _ = workspace
+    events = []
+    monkeypatch.setattr(
+        ui.Jobs,
+        "start_model_load",
+        lambda self, job, settings, model: events.append(("load", model)),
+    )
+
+    def extract(self, job, settings, state, output):
+        events.append(("extract", None))
+        raise InterruptedError("End preload ordering test")
+
+    monkeypatch.setattr(ui.Jobs, "extract", extract)
+    settings = config(
+        source,
+        review_provider=review_provider,
+        model=model,
+        reasoning="none" if review_provider == "local" else "medium",
+        final_provider=final_provider,
+        final_model=final_model,
+    )
+    job = ui.jobs.start(settings)["id"]
+    wait_until(lambda: ui.jobs.active is None and not ui.jobs.pending)
+    assert events == ([("load", expected)] if expected else []) + [("extract", None)]
+    assert ui.jobs.read(job)["status"] == "cancelled"
+
+
 def test_defaults_enable_independent_local_vision_models_for_both_stages(
     workspace,
 ):
@@ -1667,6 +1718,8 @@ def test_defaults_enable_independent_local_vision_models_for_both_stages(
     assert defaults["model"] == "qwen3-vl:8b-instruct"
     assert defaults["final_model"] == "qwen3.5:9b"
     assert defaults["automatic_review"]
+    assert defaults["local_preload"] and defaults["local_load_into_ram"]
+    assert defaults["local_load_timeout"] == 7200
     assert defaults["reasoning"] == "none" and defaults["final_reasoning"] == "medium"
     assert "work_mode" not in defaults
     local_config = {**defaults, "source_pdf": str(source)}

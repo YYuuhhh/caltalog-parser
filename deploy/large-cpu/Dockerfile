@@ -19,6 +19,7 @@ ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     OLLAMA_NO_CLOUD=1 \
     OLLAMA_NUM_PARALLEL=1 \
     OLLAMA_MAX_LOADED_MODELS=1 \
+    OLLAMA_LOAD_TIMEOUT=2h \
     OLLAMA_CONTEXT_LENGTH=32768 \
     OLLAMA_KEEP_ALIVE=60s \
     OLLAMA_VULKAN=0 \
