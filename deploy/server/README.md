@@ -64,3 +64,26 @@ To update an existing checkout, retain its `.env` and runtime data:
 git pull --ff-only
 docker compose up -d --build
 ```
+
+If extraction fails with `ModuleNotFoundError: No module named 'six'`, the old
+MinerU image is missing an OCR dependency. Repair the running container with:
+
+```bash
+sudo docker compose exec -T mineru python -m pip install 'six==1.17.0'
+sudo docker compose restart mineru
+```
+
+After the service is healthy, use **Resume saved run** to retry failed pages.
+The updated image installs `six` and verifies the OCR imports during its build.
+Rebuild it to retain the fix when the container is recreated:
+
+```bash
+git pull --ff-only
+sudo docker compose up -d --build mineru pipeline-ui
+```
+
+Parser HTTP failures now retain the response details in the page manifest and a
+bounded `error-response.json` beside it. The stoppage reason includes the failed
+page and parser error. Detailed upstream tracebacks remain in
+`logs/mineru-upstream.log`; a passing `/health` response from older images does
+not prove the OCR dependencies can load.

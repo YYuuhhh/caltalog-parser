@@ -914,6 +914,30 @@ class Jobs:
             if self.cancelled.is_set():
                 raise InterruptedError("Stopped by user.")
             if code:
+                if stage == "parse":
+                    try:
+                        manifest = (
+                            yaml.safe_load((folder / "catalog.yaml").read_text()) or {}
+                        )
+                        failed = next(
+                            (
+                                p
+                                for p in manifest.get("page_states", [])
+                                if p.get("status") == "failed"
+                                and p.get("reason")
+                                and isinstance(p.get("page_idx"), int)
+                                and p["page_idx"] >= 0
+                            ),
+                            None,
+                        )
+                    except (OSError, yaml.YAMLError, TypeError, AttributeError):
+                        failed = None
+                    if failed:
+                        raise RuntimeError(
+                            redact(
+                                f"Extract failed on PDF page {failed['page_idx'] + 1} (exit {code}): {str(failed['reason'])[:2200]}"
+                            )
+                        )
                 raise RuntimeError(
                     f"{dict(STAGES)[stage]} failed (exit {code}). See the run log."
                 )

@@ -587,6 +587,41 @@ def test_review_timeout_excludes_time_spent_paused(tmp_path, monkeypatch):
     )
 
 
+def test_extraction_failure_reports_parser_reason_and_page(workspace):
+    roots, _, _ = workspace
+    job = "e" * 32
+    folder = ui.jobs.folder(job)
+    folder.mkdir(parents=True)
+    reason = "HTTPError: 500 Server Error: ModuleNotFoundError: No module named 'six'"
+    manifest = {"page_states": [{"status": "failed", "page_idx": 2, "reason": reason}]}
+    (folder / "catalog.yaml").write_text(yaml.safe_dump(manifest))
+    with pytest.raises(RuntimeError, match="PDF page 3.*No module named 'six'"):
+        ui.jobs.command(job, "parse", 0, [sys.executable, "-c", "raise SystemExit(1)"])
+    assert (folder / "parse-0.stdout").is_file()
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "not a mapping",
+        {"page_states": [{"status": "failed", "reason": "missing page"}]},
+        {
+            "page_states": [
+                {"status": "failed", "page_idx": "invalid", "reason": "bad page"}
+            ]
+        },
+    ],
+)
+def test_malformed_failure_diagnostic_preserves_command_error(workspace, diagnostic):
+    _, _, _ = workspace
+    job = "f" * 32
+    folder = ui.jobs.folder(job)
+    folder.mkdir(parents=True)
+    (folder / "catalog.yaml").write_text(yaml.safe_dump(diagnostic))
+    with pytest.raises(RuntimeError, match="Extract failed \\(exit 1\\)"):
+        ui.jobs.command(job, "parse", 0, [sys.executable, "-c", "raise SystemExit(1)"])
+
+
 @pytest.mark.parametrize("action", ["failure", "catalog_stop", "queue_stop"])
 def test_stoppage_keeps_stage_page_reason_and_bounded_diagnostics(
     workspace, monkeypatch, action

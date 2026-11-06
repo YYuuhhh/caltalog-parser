@@ -101,6 +101,11 @@ RUN if [ "${MINERU_TARGET}" = "gpu" ]; then \
       mineru-models-download -s "${MINERU_MODEL_SOURCE}" -m vlm; \
     fi
 
+# MinerU's OCR operators import six without declaring it as a dependency.
+# Check the lazy OCR imports here; /health alone does not exercise them.
+RUN python -m pip install 'six==1.17.0' \
+    && python -c "from mineru.model.utils.pytorchocr.data.imaug import operators"
+
 WORKDIR /app
 
 COPY app.py /app/app.py

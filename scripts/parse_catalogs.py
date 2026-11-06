@@ -55,6 +55,47 @@ def atomic_json(path: Path, value: object) -> None:
     os.replace(temporary, path)
 
 
+def check_parse_response(response: requests.Response, run_dir: Path) -> None:
+    """Retain bounded error details instead of discarding the parser's cause."""
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        body = bytearray()
+        try:
+            for chunk in response.iter_content(chunk_size=4096):
+                body.extend(chunk[: 8193 - len(body)])
+                if len(body) > 8192:
+                    break
+            text = bytes(body[:8192]).decode("utf-8", errors="replace")
+        except requests.RequestException as read_error:
+            text = f"Could not read parser error response: {read_error}"
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            detail = text
+        else:
+            detail = (
+                payload.get("detail", payload.get("error", payload))
+                if isinstance(payload, dict)
+                else payload
+            )
+            if not isinstance(detail, str):
+                detail = json.dumps(detail, ensure_ascii=False)
+        detail = " ".join(detail.split())[:2000]
+        atomic_json(
+            run_dir / "error-response.json",
+            {
+                "http_status": response.status_code,
+                "content_type": response.headers.get("content-type"),
+                "body": text,
+                "truncated": len(body) > 8192,
+            },
+        )
+        raise requests.HTTPError(
+            f"{exc}{': ' + detail if detail else ''}", response=response
+        ) from exc
+
+
 def parse_one(args: argparse.Namespace, pdf: Path) -> dict[str, object]:
     source_sha = sha256_file(pdf)
     run_id = (
@@ -95,7 +136,7 @@ def parse_one(args: argparse.Namespace, pdf: Path) -> dict[str, object]:
                 stream=True,
             ) as response,
         ):
-            response.raise_for_status()
+            check_parse_response(response, run_dir)
             content_type = response.headers.get("content-type")
             cache_hits = int(response.headers.get("X-MinerU-Cache-Hits", "0"))
             mineru_version = response.headers.get("X-MinerU-Version")
@@ -142,6 +183,8 @@ def parse_one(args: argparse.Namespace, pdf: Path) -> dict[str, object]:
             .isoformat()
             .replace("+00:00", "Z"),
         }
+        if isinstance(exc, requests.HTTPError) and exc.response is not None:
+            result["http_status"] = exc.response.status_code
     atomic_json(run_dir / "manifest.json", result)
     return result
 
