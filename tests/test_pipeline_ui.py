@@ -702,6 +702,53 @@ def test_stoppage_supports_legacy_stages_without_reading_unrelated_outputs(works
     assert details["diagnostics"] == []
 
 
+def test_stoppage_shows_local_response_diagnostics_without_thinking_text(workspace):
+    _, source, client = workspace
+    job, task_id = "f" * 32, "e" * 32
+    folder = ui.queue() / task_id
+    folder.mkdir(parents=True)
+    sr.atomic_json(
+        folder / "error.json", {"error": "Local model returned an empty final answer."}
+    )
+    sr.atomic_json(
+        folder / "response-diagnostics.json",
+        {
+            "content_chars": 0,
+            "thinking_chars": 1234,
+            "eval_count": 516,
+        },
+    )
+    sr.atomic_json(folder / "ollama-http.json", {"body": "x" * 16000})
+    sr.atomic_json(
+        folder / "ollama-response.json",
+        {
+            "message": {"thinking": "PRIVATE_THINKING_FIXTURE"},
+        },
+    )
+    ui.jobs.save(
+        job,
+        {
+            "id": job,
+            "status": "failed",
+            "source_name": source.name,
+            "config": config(source).model_dump(),
+            "stages": [
+                {"id": "correctness", "title": "Page correctness", "status": "failed"}
+            ],
+            "review_tasks": [
+                {"id": task_id, "stage": "correctness", "page": 1, "status": "failed"}
+            ],
+            "error": "Page correctness failed (exit 1). See the run log.",
+        },
+    )
+    details = client.get(f"/api/runs/{job}/stoppage").json()
+    diagnostic = {d["label"]: d["text"] for d in details["diagnostics"]}
+    assert "empty final answer" in diagnostic["Reviewer error"]
+    assert '"eval_count": 516' in diagnostic["Local model response details"]
+    assert len(diagnostic["Local server HTTP response"]) <= 8192
+    assert "PRIVATE_THINKING_FIXTURE" not in json.dumps(details)
+
+
 def test_review_binding_required_checks_sources_and_confidence(tmp_path):
     request = task(tmp_path, "final", confidence_threshold=0.95)
     assert sr.validate_result(request, result(request))["status"] == "passed"

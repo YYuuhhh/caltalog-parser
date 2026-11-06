@@ -100,6 +100,29 @@ existing saved run, these new options receive the defaults on Resume. To change
 them explicitly, use Reuse settings and start with the updated settings.
 The model-loading card reports elapsed time, readiness or the failure reason.
 
+## Empty or invalid local review JSON
+
+The Qwen3-VL thinking-Off compatibility fix and response diagnostics require an
+application image update. Keep the running Ollama container and its loaded model:
+
+```bash
+git pull --ff-only
+sudo python3 scripts/runtime_bundle.py build
+sudo docker compose up -d --no-deps --no-build --pull never pipeline-ui
+```
+
+Then select **Resume** on the failed catalog. Completed extraction is reused;
+the failed review gets a fresh task. No model weights need to be downloaded.
+If this is the first update with runtime bundles, run
+`sudo python3 scripts/runtime_bundle.py prepare` before `build` once.
+
+For any new failure, open its stoppage dropdown for the error, token counts and
+answer/thinking lengths. The complete original model response is saved at
+`logs/review-queue/<task-id>/ollama-response.json`, including when JSON parsing or
+validation fails. HTTP errors retain a bounded body in `ollama-http.json`.
+The compatibility path accepts only a whole schema-valid result for the current
+task, with thinking Off and Qwen3-VL; incomplete or unrelated answers remain failed.
+
 ## Full rebuild after removing Docker cache/images/volumes
 
 Keep the ordinary host files in `artifacts/runtime/` (or your chosen external

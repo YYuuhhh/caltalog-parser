@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 import requests
+from jsonschema import ValidationError
 
 import subscription_review as review
 
@@ -99,16 +100,113 @@ def session(url):
 
 
 def checked(response):
+    endpoint = urlsplit(getattr(response, "url", "")).path or "local API"
+    try:
+        value = response.json()
+    except ValueError as exc:
+        preview = repr(getattr(response, "text", "")[:300])
+        raise ValueError(
+            f"{endpoint} returned HTTP {response.status_code} without valid JSON "
+            f"(body: {preview}). Check the Ollama server log."
+        ) from exc
     if not response.ok or response.is_redirect:
-        try:
-            detail = str(response.json().get("error", ""))[:500]
-        except ValueError:
-            detail = ""
-        raise ValueError(f"Local server returned HTTP {response.status_code}: {detail}")
-    value = response.json()
+        detail = str(value.get("error", ""))[:500] if isinstance(value, dict) else ""
+        raise ValueError(f"{endpoint} returned HTTP {response.status_code}: {detail}")
     if not isinstance(value, dict) or value.get("error"):
-        raise ValueError("Local server returned an invalid response or model error.")
+        detail = str(value.get("error", ""))[:500] if isinstance(value, dict) else ""
+        raise ValueError(
+            f"{endpoint} returned an invalid response or model error: {detail}"
+        )
     return value
+
+
+def json_answer(text):
+    """Accept one JSON object, optionally wrapped in a single Markdown fence."""
+    text = text.strip().removeprefix("\ufeff").strip()
+    fenced = re.fullmatch(r"```(?:json)?[ \t]*\r?\n(.*?)\r?\n```", text, re.S | re.I)
+    if fenced:
+        text = fenced[1].strip()
+
+    def unique_fields(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"Duplicate JSON field: {key}")
+            value[key] = item
+        return value
+
+    def invalid_constant(value):
+        raise ValueError(f"Nonfinite JSON value: {value}")
+
+    value = json.loads(
+        text, object_pairs_hook=unique_fields, parse_constant=invalid_constant
+    )
+    if not isinstance(value, dict):
+        raise ValueError("The review answer must be a JSON object.")
+    return value
+
+
+def parse_answer(response, request, model, diagnostics):
+    """Separate protocol failures, final answers and the Qwen parser workaround."""
+    if response.get("model") != request["model"]:
+        raise ValueError(
+            "Local server returned a different model than the one requested."
+        )
+    if response.get("done") is not True or response.get("done_reason") != "stop":
+        raise ValueError(
+            "Local model response was incomplete "
+            f"(done_reason={response.get('done_reason')!r}). "
+            "Increase output tokens or reduce RAW cells per task; a final JSON answer is required."
+        )
+    message = response.get("message")
+    if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+        raise ValueError(
+            "Local server did not return a text answer in message.content."
+        )
+    if message.get("tool_calls"):
+        raise ValueError(
+            "Local model returned tool calls instead of a final JSON review."
+        )
+    content = message["content"]
+    if not content.strip():
+        # Ollama 0.32.5's Qwen3-VL parser starts in thinking mode even for
+        # think=false. A grammar-constrained JSON answer can land entirely in
+        # message.thinking. Never extract JSON snippets from actual reasoning:
+        # accept only a whole result with this task's exact schema/binding.
+        # https://github.com/ollama/ollama/blob/v0.32.5/model/parsers/qwen3vl.go
+        thinking = message.get("thinking")
+        if (
+            request["reasoning"] == "none"
+            and model.get("family") == "qwen3vl"
+            and isinstance(thinking, str)
+            and thinking.lstrip().startswith("{")
+        ):
+            try:
+                result = json_answer(thinking)
+                review.validate_result(request, result)
+            except (ValueError, TypeError, KeyError, ValidationError):
+                pass
+            else:
+                diagnostics["answer_channel"] = "thinking_json_compatibility"
+                return result
+        raise ValueError(
+            "Local model returned an empty final answer "
+            f"({diagnostics['thinking_chars']} thinking characters, "
+            f"{response.get('eval_count', 'unknown')} generated tokens). "
+            "No review result was accepted. Try thinking On for a Thinking model, "
+            "or use an Instruct model for thinking Off. If the output budget was exhausted, "
+            "increase output tokens or reduce RAW cells per task."
+        )
+    try:
+        result = json_answer(content)
+    except ValueError as exc:
+        raise ValueError(
+            f"Local model returned invalid review JSON: {exc}. "
+            "Return one complete JSON object matching the supplied schema. "
+            "See ollama-response.json for the original response."
+        ) from exc
+    diagnostics["answer_channel"] = "content"
+    return result
 
 
 def describe(client, url, model):
@@ -131,6 +229,8 @@ def describe(client, url, model):
         if "thinking" in data.get("capabilities", [])
         else ["none"],
         "vision": True,
+        "family": data.get("details", {}).get("family")
+        or data.get("model_info", {}).get("general.architecture"),
     }
 
 
@@ -509,6 +609,11 @@ def execute(folder):
             + json.dumps(evidence, ensure_ascii=False)
             + f"\nTask ID: {request['task_id']}\nContext SHA256: {request['context_sha256']}\n"
         )
+        schema = json.loads((folder / "schema.json").read_text())
+        prompt += (
+            "\nReturn only one JSON object matching this response schema:\n"
+            + json.dumps(schema, ensure_ascii=False)
+        )
         prompt += "\nProvide a nonempty decision summary. For numeric-data checks cite concrete values and table/row/drawing references in each check's evidence. Generic pass statements without such references are unverified."
         prompt += "\nThis local model has no tools or browsing session. Internet retrieval is performed by the application. Use only the attached image, this task's data, and the retrieved web evidence; do not claim searches you did not perform."
         if not evidence and request["stage"] in ("internet", "mapping", "final"):
@@ -533,7 +638,7 @@ def execute(folder):
             "model": request["model"],
             "stream": False,
             "keep_alive": -1 if config.get("keep_loaded", True) else 0,
-            "format": json.loads((folder / "schema.json").read_text()),
+            "format": schema,
             "messages": [
                 {
                     "role": "user",
@@ -573,32 +678,57 @@ def execute(folder):
         # Cold HDD loading has its own budget; each fresh review gets its full
         # response timeout after the weights are ready.
         deadline = time.monotonic() + request.get("timeout", 1800)
-        response = checked(
-            client.post(
-                url + "/api/chat",
-                json=payload,
-                timeout=(10, max(1, deadline - time.monotonic())),
-                allow_redirects=False,
-            )
+        raw_response = client.post(
+            url + "/api/chat",
+            json=payload,
+            timeout=(10, max(1, deadline - time.monotonic())),
+            allow_redirects=False,
         )
-        if response.get("model") != request["model"]:
-            raise ValueError(
-                "Local server returned a different model than the one requested."
+        try:
+            response = checked(raw_response)
+        except ValueError:
+            review.atomic_json(
+                folder / "ollama-http.json",
+                {
+                    "status": raw_response.status_code,
+                    "content_type": raw_response.headers.get("Content-Type", ""),
+                    "body": raw_response.text[:8192],
+                    "truncated": len(raw_response.text) > 8192,
+                },
             )
-        if not response.get("done") or response.get("done_reason") == "length":
-            raise ValueError(
-                "Local model response was incomplete. Increase output tokens or reduce the task size."
-            )
-        result = json.loads(response["message"]["content"])
+            raise
+        review.atomic_json(folder / "ollama-response.json", response)
+        message = response.get("message")
+        message = message if isinstance(message, dict) else {}
+        diagnostics = {
+            "model": response.get("model"),
+            "reasoning": request["reasoning"],
+            "done": response.get("done"),
+            "done_reason": response.get("done_reason"),
+            "content_chars": len(message.get("content", ""))
+            if isinstance(message.get("content"), str)
+            else 0,
+            "thinking_chars": len(message.get("thinking", ""))
+            if isinstance(message.get("thinking"), str)
+            else 0,
+            "output_tokens": output,
+        }
+        execution["usage"] = {
+            k: response.get(k)
+            for k in ("prompt_eval_count", "eval_count", "total_duration")
+        }
+        diagnostics.update(execution["usage"])
+        review.atomic_json(folder / "execution.json", execution)
+        try:
+            result = parse_answer(response, request, model, diagnostics)
+        finally:
+            review.atomic_json(folder / "response-diagnostics.json", diagnostics)
         review.atomic_json(folder / "response.json", result)
         enforce_sources(request, result, evidence)
         enforce_rationale(request, result)
         enforce_structured_tools(request, result)
         review.validate_result(request, result)
-        execution["usage"] = {
-            k: response.get(k)
-            for k in ("prompt_eval_count", "eval_count", "total_duration")
-        }
+        execution["answer_channel"] = diagnostics["answer_channel"]
         review.atomic_json(folder / "execution.json", execution)
         review.atomic_json(folder / "result.json", result)
         return result

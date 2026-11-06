@@ -2323,6 +2323,8 @@ def stoppage(job: str):
             if task and re.fullmatch(r"[a-f0-9]{32}", task["id"]):
                 for name, label in (
                     ("error.json", "Reviewer error"),
+                    ("response-diagnostics.json", "Local model response details"),
+                    ("ollama-http.json", "Local server HTTP response"),
                     ("stderr.log", "Reviewer output"),
                 ):
                     text = diagnostic_tail(queue() / task["id"] / name)
