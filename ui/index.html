@@ -42,8 +42,11 @@
       <p class="eyebrow">PIPELINE</p>
       <nav id="navigation" aria-label="Pipeline stages"></nav>
       <div class="sidebar-bottom">
-        <span class="dot"></span>Local library
-        <p>Evidence stays connected to its catalog, manufacturer and page.</p>
+        <button id="sidebar-library" class="library-shortcut">
+          <span aria-hidden="true">▤</span> Catalog library
+          <span id="library-count"></span>
+        </button>
+        <p>Loaded catalogs, processing history and technical results.</p>
       </div>
     </aside>
     <main id="main" tabindex="-1">
@@ -450,8 +453,18 @@
             placeholder="Search manufacturers or catalogs…"
             aria-label="Search library"
           />
-          <div id="library-manufacturers" class="manufacturer-grid"></div>
+          <details class="manufacturer-directory">
+            <summary>Manufacturer directory</summary>
+            <div id="library-manufacturers" class="manufacturer-grid"></div>
+          </details>
           <h3>Catalogs</h3>
+          <p class="help">
+            <span class="library-legend loaded">● Loaded, not parsed</span>
+            <span class="library-legend validated">● Validated</span>
+            <span class="library-legend attention"
+              >● Processing / needs review</span
+            >
+          </p>
           <div id="library-catalogs" class="table-scroll"></div>
           <h3>Duplicate candidates</h3>
           <div id="library-duplicates"></div>

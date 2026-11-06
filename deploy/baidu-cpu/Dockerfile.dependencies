@@ -1,0 +1,6 @@
+FROM python:3.11-slim-bookworm
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1
+RUN python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.9.1+cpu torchvision==0.24.1+cpu
+RUN python -m pip install transformers==4.52.1 tokenizers==0.21.4 huggingface-hub==0.36.0 accelerate==1.12.0 einops==0.8.1 addict==2.4.0 easydict==1.13 pillow==11.3.0 requests==2.32.5 fastapi==0.119.1 uvicorn==0.38.0
+RUN python -m pip check
+RUN mkdir -p /opt && python -c "import importlib.metadata as m,json; open('/opt/baidu-python.lock.json','w').write(json.dumps({d.metadata['Name'].lower().replace('_','-'):d.version for d in m.distributions()},sort_keys=True))"

@@ -121,6 +121,10 @@ const REVIEW = "qwen3-vl:8b-instruct",
         "1 installed vision",
       ),
     );
+    await open("model");
+    await row("model", REVIEW)
+      .getByRole("button", { name: `Choose ${REVIEW}`, exact: true })
+      .click();
     assert.equal(pulls.length, 0);
     assert(
       await page.locator("#run").isDisabled(),

@@ -38,6 +38,8 @@ import subscription_review as review
 import catalog_detection as detection
 import model_catalog as models
 import workbench_outputs as outputs
+import system_diagnostics as diagnostics
+import baidu_ocr
 import review_notes
 import processing_control as control
 import local_review as local
@@ -86,6 +88,9 @@ def restricted_path(value, roots, suffix=None):
     return path
 
 
+SYSTEM_DEFAULTS = diagnostics.defaults(diagnostics.hardware())
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source_pdf: str = ""
@@ -122,27 +127,33 @@ class Settings(BaseModel):
     mineru_url: str = "http://mineru:8000"
     review_provider: Literal["local", "work"] = "local"
     final_provider: Literal["local", "work"] = "local"
-    model: str = Field("qwen3-vl:8b-instruct", max_length=160)
-    reasoning: models.ReasoningEffort = "none"
-    final_model: str = Field("qwen3.5:9b", max_length=160)
+    model: str = Field(SYSTEM_DEFAULTS["model"], max_length=160)
+    reasoning: models.ReasoningEffort = "medium"
+    final_model: str = Field(SYSTEM_DEFAULTS["final_model"], max_length=160)
     final_reasoning: models.ReasoningEffort = "medium"
     local_url: str = "http://local-llm:11434"
-    local_ram_gb: Literal[32, 128, 750] = 32
-    local_context_tokens: int = Field(32768, ge=16384, le=131072)
+    local_ram_gb: Literal[32, 128, 750] = SYSTEM_DEFAULTS["local_ram_gb"]
+    local_context_tokens: int = Field(
+        SYSTEM_DEFAULTS["local_context_tokens"], ge=16384, le=131072
+    )
     local_output_tokens: int = Field(4096, ge=512, le=16384)
     local_use_gpu: Literal[False] = False
     local_keep_loaded: bool = True
     local_preload: bool = True
     local_load_timeout: int = Field(7200, ge=10, le=86400)
     local_load_into_ram: bool = True
-    local_temperature: float = Field(0.2, ge=0, le=2, allow_inf_nan=False)
+    local_temperature: float = Field(0, ge=0, le=2, allow_inf_nan=False)
+    local_cpu_threads: int = Field(SYSTEM_DEFAULTS["local_cpu_threads"], ge=0, le=4096)
+    ocr_check_model: Literal["none", "baidu/Unlimited-OCR-cpu"] = "none"
+    ocr_check_url: str = "http://baidu-ocr:8095"
+    ocr_check_tokens: int = Field(2048, ge=256, le=8192)
     local_source_urls: str = Field("", max_length=4000)
     local_search_url: str = ""
     automatic_review: bool = True
     prepare_manual_review: bool = False
-    review_timeout: int = Field(1800, ge=30, le=86400)
-    review_dpi: int = Field(180, ge=100, le=300)
-    review_batch_rows: int = Field(60, ge=10, le=100)
+    review_timeout: int = Field(7200, ge=30, le=86400)
+    review_dpi: int = Field(144, ge=100, le=300)
+    review_batch_rows: int = Field(20, ge=10, le=100)
     force_structure: bool = False
 
     @model_validator(mode="after")
@@ -169,6 +180,7 @@ class Settings(BaseModel):
             raise ValueError("Specify at least one language and tool family.")
         model_root = ROOTS["catalogs"] / "library"
         local.validate_url(self.local_url)
+        local.validate_url(self.ocr_check_url)
         if self.local_search_url:
             local.validate_url(self.local_search_url)
         if any(not review.valid_source(u) for u in self.local_source_urls.split()):
@@ -198,6 +210,7 @@ class Settings(BaseModel):
             "load_timeout": self.local_load_timeout,
             "load_into_ram": self.local_load_into_ram,
             "temperature": self.local_temperature,
+            "cpu_threads": self.local_cpu_threads,
             "source_urls": self.local_source_urls,
             "search_url": self.local_search_url,
         }
@@ -578,6 +591,23 @@ class Jobs:
         state["files"] = self.files(job)
         state["confidence"] = outputs.confidence(state)
         self.extraction_progress(job, state)
+        state["performance"] = diagnostics.read_json(
+            self.folder(job) / "performance.json", {}
+        )
+        page = state.get("current_page", {})
+        if page.get("page") and page.get("stage") == state.get("current_stage"):
+            state["ocr_generation"] = diagnostics.read_json(
+                self.folder(job) / f"page-{int(page['page'])}-baidu-progress.json", {}
+            )
+            if state["ocr_generation"]:
+                state["ocr_generation"]["stage"] = page["stage"]
+        latest = state.get("review_tasks", [])
+        if latest:
+            task_id = latest[-1].get("id", "")
+            if re.fullmatch(r"[a-f0-9]{32}", task_id):
+                state["generation"] = diagnostics.read_json(
+                    queue() / task_id / "generation.json", {}
+                )
         try:
             state["model_load"] = json.loads(
                 (self.folder(job) / "model-load/state.json").read_text()
@@ -847,6 +877,9 @@ class Jobs:
                 ("duplicates.json", "Duplicate comparisons"),
                 ("manual-review.json", "Manual review evidence"),
                 ("run.log", "Run log"),
+                ("performance.json", "Performance measurements"),
+                ("performance.jsonl", "Resource sample history"),
+                ("technical.json", "Catalog technical history"),
             ]
         ]
         return [
@@ -1258,9 +1291,35 @@ class Jobs:
             for page_number, page in enumerate(review_pages):
                 index = page["page_idx"]
                 state["current_page"] = {"stage": stage, "page": index + 1}
+                self.save(job, state)
                 image = folder / f"page-{index + 1}.png"
                 if not image.is_file():
                     pdf[index].get_pixmap(dpi=config.review_dpi).save(image)
+                ocr_evidence = None
+                if config.ocr_check_model != "none":
+                    ocr_path = folder / f"page-{index + 1}-baidu.json"
+                    self.command(
+                        job,
+                        stage,
+                        900000 + index,
+                        [
+                            sys.executable,
+                            str(SCRIPTS / "baidu_ocr.py"),
+                            "--image",
+                            str(image),
+                            "--output",
+                            str(ocr_path),
+                            "--url",
+                            config.ocr_check_url,
+                            "--timeout",
+                            str(config.review_timeout),
+                            "--max-tokens",
+                            str(config.ocr_check_tokens),
+                            "--threads",
+                            str(config.local_cpu_threads),
+                        ],
+                    )
+                    ocr_evidence = diagnostics.read_json(ocr_path)
                 rows = [
                     r
                     for r in raw
@@ -1429,6 +1488,21 @@ class Jobs:
                             for r in rows
                             if int(r["row_index"]) < 2
                         ]
+                    if ocr_evidence:
+                        context["independent_ocr"] = {
+                            key: ocr_evidence[key]
+                            for key in (
+                                "model",
+                                "revision",
+                                "device",
+                                "source_sha256",
+                                "text",
+                                "complete",
+                            )
+                        }
+                        context["independent_ocr"]["role"] = (
+                            "Untrusted independent OCR transcription; compare with the original PDF image. Agreement does not prove correctness."
+                        )
                     provider = (
                         config.final_provider
                         if stage == "final"
@@ -1564,6 +1638,47 @@ class Jobs:
         folder = self.folder(job)
         output = ROOTS["parsed"] / "ui-runs" / job
         state["status"] = "running"
+
+        def model_probe():
+            with local.session(config.local_url) as client:
+                value = local.checked(
+                    client.get(
+                        config.local_url + "/api/ps", timeout=2, allow_redirects=False
+                    )
+                )
+            models = [
+                {
+                    key: model.get(key)
+                    for key in ("name", "size", "size_vram", "context_length")
+                }
+                for model in value.get("models", [])
+            ]
+            process = {"available": False}
+            try:
+                target = os.getenv(
+                    "INFERENCE_MONITOR_OLLAMA_URL", "http://local-llm:11434"
+                )
+                if config.local_url.rstrip("/") != target.rstrip("/"):
+                    raise ValueError(
+                        "No process monitor configured for this Ollama address. Host-wide counters describe the application host."
+                    )
+                url = os.getenv(
+                    "INFERENCE_MONITOR_URL", "http://inference-monitor:8096"
+                )
+                with local.session(url) as client:
+                    process = local.checked(
+                        client.get(url + "/metrics", timeout=2, allow_redirects=False)
+                    )
+            except Exception as exc:
+                process["error"] = str(exc)[:300]
+            return {"models": models, "process": process}
+
+        monitor = diagnostics.Monitor(
+            folder / "performance.json",
+            model_probe=model_probe
+            if "local" in (config.review_provider, config.final_provider)
+            else None,
+        ).start()
         try:
             source, pages, mapping = validate_settings(config)
             commands = {
@@ -1580,6 +1695,7 @@ class Jobs:
                     raise InterruptedError("Stopped by user.")
                 self.checkpoint(job)
                 stage = progress["id"]
+                monitor.set_stage(stage)
                 if stage == "structure" and config.final_provider == "local":
                     self.start_model_load(job, config, config.final_model)
                 state["current_stage"] = stage
@@ -1689,11 +1805,13 @@ class Jobs:
                     s["status"] = "failed"
         finally:
             self.stop_model_load(job)
+            monitor.close()
             for s in state["stages"]:
                 if s["status"] in ("running", "queued"):
                     s["status"] = "not_run"
             state["completed_at"] = now()
             self.save(job, state)
+            diagnostics.atomic(folder / "technical.json", catalog_technical(state))
 
     def prepare_manual(self, job, state):
         folder = self.folder(job)
@@ -1887,10 +2005,8 @@ def health():
     return {"status": "healthy"}
 
 
-@app.get("/api/bootstrap")
-def bootstrap():
+def catalog_sources(lib):
     catalogs = []
-    lib = library()
     manufacturers = lib.manufacturers()
     for subdir in ("imports/guhring", "input", "test", "uploads"):
         folder = ROOTS["catalogs"] / subdir
@@ -1924,6 +2040,14 @@ def bootstrap():
                 )
             except Exception:
                 continue
+    return catalogs
+
+
+@app.get("/api/bootstrap")
+def bootstrap():
+    lib = library()
+    manufacturers = lib.manufacturers()
+    catalogs = catalog_sources(lib)
     defaults = Settings().model_dump()
     defaults["mineru_url"] = os.getenv("MINERU_API_URL", defaults["mineru_url"])
     if catalogs:
@@ -1962,18 +2086,223 @@ def bootstrap():
         "queued_runs": list(jobs.pending),
         "models": models.catalog(ROOTS["catalogs"] / "library"),
         "local_llm": {"presets": local.PRESETS, "models": []},
+        "system": diagnostics.hardware(),
+        "default_profile": SYSTEM_DEFAULTS,
     }
 
 
 @app.get("/api/library")
 def get_library():
     lib = library()
+    catalogs = lib.catalogs()
+    known = {c["sha256"] for c in catalogs}
+    history = {}
+    for path in (ROOTS["logs"] / "ui-runs").glob("*/state.json"):
+        state = diagnostics.read_json(path, {})
+        if state.get("catalog_id") and re.fullmatch(
+            r"[a-f0-9]{32}", state.get("id", "")
+        ):
+            saved = diagnostics.read_json(path.with_name("technical.json"))
+            technical = (
+                saved
+                if saved
+                and state.get("completed_at") == saved.get("completed_at")
+                and state.get("status")
+                in {
+                    "completed",
+                    "quality_blocked",
+                    "failed",
+                    "cancelled",
+                    "interrupted",
+                }
+                else catalog_technical(state)
+            )
+            history.setdefault(state["catalog_id"], []).append(technical)
+    for item in catalogs:
+        item["history"] = sorted(
+            history.get(item["id"], []),
+            key=lambda h: h.get("created_at") or "",
+            reverse=True,
+        )
+        run = item.get("last_run")
+        if run and re.fullmatch(r"[a-f0-9]{32}", run):
+            folder = jobs.folder(run)
+            state = diagnostics.read_json(folder / "state.json", {})
+            item["technical"] = next(
+                (entry for entry in item["history"] if entry["run_id"] == run), None
+            ) or catalog_technical(state)
+    for source in catalog_sources(lib):
+        detection_info = source.get("detection", {})
+        sha = detection_info.get("source_sha256")
+        if sha in known:
+            continue
+        known.add(sha)
+        manufacturer = detection_info.get("manufacturer", {})
+        catalogs.append(
+            {
+                "id": "loaded-" + sha[:16],
+                "sha256": sha,
+                "name": source["name"],
+                "path": source["path"],
+                "pages": source["pages"],
+                "manufacturer": manufacturer.get("name") or "Not identified",
+                "manufacturer_id": manufacturer.get("id"),
+                "revision": "unknown",
+                "status": "loaded",
+                "product_count": 0,
+                "last_run": None,
+                "source_modified_at": datetime.fromtimestamp(
+                    Path(source["path"]).stat().st_mtime, timezone.utc
+                ).isoformat(),
+                "technical": None,
+            }
+        )
+    manufacturers = lib.manufacturers()
+    for manufacturer in manufacturers:
+        owned = [c for c in catalogs if c.get("manufacturer_id") == manufacturer["id"]]
+        manufacturer["catalog_count"] = len(owned)
+        manufacturer["pending_count"] = sum(
+            c["status"] in {"loaded", "registered"} for c in owned
+        )
     return {
-        "manufacturers": lib.manufacturers(),
-        "catalogs": lib.catalogs(),
+        "manufacturers": manufacturers,
+        "catalogs": catalogs,
         "target_manufacturer_id": lib.target(),
         "duplicates": lib.duplicates(),
     }
+
+
+def catalog_technical(state):
+    if not state:
+        return None
+    config = state.get("config", {})
+    checks, groups = [], {}
+    for task in state.get("review_tasks", []):
+        task_id = task.get("id", "")
+        if not re.fullmatch(r"[a-f0-9]{32}", task_id):
+            continue
+        execution = diagnostics.read_json(queue() / task_id / "execution.json", {})
+        if not isinstance(execution, dict) or not execution.get("model"):
+            continue
+        key = (task.get("stage"), execution.get("model"), execution.get("reasoning"))
+        if key not in groups:
+            item = {
+                "stage": key[0],
+                "model": key[1],
+                "reasoning": key[2],
+                "provider": execution.get("provider"),
+                "tasks": 0,
+                "generated_tokens": 0,
+                "generation_nanoseconds": 0,
+            }
+            groups[key] = item
+            checks.append(item)
+        item = groups[key]
+        item["tasks"] += 1
+        usage = execution.get("usage") or {}
+        if usage.get("eval_count") and usage.get("eval_duration"):
+            item["generated_tokens"] += usage["eval_count"]
+            item["generation_nanoseconds"] += usage["eval_duration"]
+    for item in checks:
+        item["tokens_per_second"] = (
+            round(item["generated_tokens"] * 1e9 / item["generation_nanoseconds"], 3)
+            if item["generation_nanoseconds"]
+            else None
+        )
+    if re.fullmatch(r"[a-f0-9]{32}", state.get("id", "")):
+        ocr = [
+            diagnostics.read_json(path, {})
+            for path in jobs.folder(state["id"]).glob("page-*-baidu.json")
+        ]
+        ocr = [
+            item for item in ocr if item.get("complete") and item.get("device") == "cpu"
+        ]
+        if ocr:
+            checks.append(
+                {
+                    "stage": "independent_ocr",
+                    "model": ocr[0]["model"],
+                    "reasoning": "none",
+                    "provider": "baidu_cpu",
+                    "tasks": len(ocr),
+                    "generated_tokens": sum(item.get("tokens", 0) for item in ocr),
+                }
+            )
+    return {
+        "run_id": state.get("id"),
+        "created_at": state.get("created_at"),
+        "completed_at": state.get("completed_at"),
+        "status": state.get("status"),
+        "confidence": outputs.confidence(state),
+        "checks": checks,
+        "requested_models": {
+            key: config.get(key)
+            for key in ("model", "reasoning", "final_model", "final_reasoning")
+        },
+        "extraction_model": config.get("extraction_model"),
+        "parameters": {
+            key: config.get(key)
+            for key in (
+                "local_context_tokens",
+                "local_output_tokens",
+                "local_cpu_threads",
+                "local_temperature",
+                "review_dpi",
+                "review_batch_rows",
+                "ocr_check_model",
+            )
+        },
+        "stages": [
+            {
+                k: stage.get(k)
+                for k in ("id", "title", "status", "started_at", "completed_at")
+            }
+            for stage in state.get("stages", [])
+        ],
+        "performance": diagnostics.read_json(
+            ROOTS["logs"] / "ui-runs" / state["id"] / "performance.json", {}
+        )
+        if re.fullmatch(r"[a-f0-9]{32}", state.get("id", ""))
+        else {},
+    }
+
+
+SYSTEM_PROBE = diagnostics.Probe()
+SYSTEM_PROBE_LOCK = threading.Lock()
+
+
+@app.get("/api/system")
+def system_info():
+    with SYSTEM_PROBE_LOCK:
+        sample = SYSTEM_PROBE.sample()
+    return {
+        "hardware": diagnostics.hardware(),
+        "current": sample,
+        "bottlenecks": diagnostics.bottlenecks(sample),
+    }
+
+
+@app.get("/api/ocr/baidu")
+def baidu_status(url: str = "http://baidu-ocr:8095"):
+    return baidu_ocr.status(local.validate_url(url))
+
+
+class OCRServerInput(BaseModel):
+    url: str = "http://baidu-ocr:8095"
+
+
+@app.post("/api/ocr/baidu/install", status_code=202)
+def baidu_install(config: OCRServerInput):
+    try:
+        url = local.validate_url(config.url)
+        with local.session(url) as client:
+            return local.checked(
+                client.post(url + "/install", timeout=10, allow_redirects=False)
+            )
+    except Exception as exc:
+        raise HTTPException(
+            503, "Start the optional Baidu CPU container first: " + str(exc)
+        )
 
 
 @app.get("/api/models")

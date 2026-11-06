@@ -21,6 +21,48 @@ x-tools: &tools
   networks: [parser-internal, parser-edge]
 
 services:
+  inference-monitor:
+    container_name: CatalogFlow_inference-monitor
+    image: guhring-parser-tools:3
+    pull_policy: never
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    pid: "service:local-llm"
+    depends_on:
+      local-llm:
+        condition: service_started
+    command: ["python", "/scripts/inference_monitor.py"]
+    volumes:
+      - ./scripts:/scripts:ro
+    networks: [parser-internal]
+    cap_drop: [ALL]
+    read_only: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8096/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+  baidu-ocr:
+    container_name: CatalogFlow_baidu-ocr
+    image: catalogflow-baidu-ocr:cpu-v1
+    pull_policy: never
+    profiles: [baidu-ocr]
+    build:
+      context: .
+      dockerfile: deploy/baidu-cpu/Dockerfile
+      network: none
+    environment:
+      CUDA_VISIBLE_DEVICES: ""
+      BAIDU_OCR_DATA: /models
+    volumes:
+      - ${BAIDU_OCR_DATA_DIR:-./data/baidu-ocr}:/models
+    networks: [parser-internal, parser-edge]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8095/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
   init-storage:
     container_name: CatalogFlow_init-storage
     image: guhring-parser-tools:3
@@ -109,6 +151,8 @@ services:
     container_name: CatalogFlow_pipeline-ui
     <<: *tools
     depends_on:
+      inference-monitor:
+        condition: service_started
       init-storage:
         condition: service_completed_successfully
       local-llm:
@@ -116,6 +160,8 @@ services:
     command: ["python", "/scripts/pipeline_ui.py"]
     environment:
       MINERU_API_URL: http://mineru:8000
+      INFERENCE_MONITOR_URL: ${INFERENCE_MONITOR_URL:-http://inference-monitor:8096}
+      INFERENCE_MONITOR_OLLAMA_URL: ${INFERENCE_MONITOR_OLLAMA_URL:-http://local-llm:11434}
       PIPELINE_UI_MAX_UPLOAD_MB: ${PIPELINE_UI_MAX_UPLOAD_MB:-512}
       TZ: ${TZ:-Asia/Yekaterinburg}
     volumes:

@@ -1948,3 +1948,133 @@ dialog::backdrop {
     grid-column: 2 / -1;
   }
 }
+.library-shortcut {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 12px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  font-weight: 650;
+}
+.library-shortcut.active {
+  border-color: #63dce8;
+  color: #63dce8;
+}
+.library-shortcut #library-count {
+  margin-left: auto;
+  font-size: 12px;
+}
+.catalog-state {
+  display: inline-block;
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.manufacturer-directory {
+  margin: 18px 0;
+}
+.manufacturer-directory summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+#library-catalogs table {
+  min-width: 1080px;
+}
+#library-catalogs td:first-child {
+  min-width: 170px;
+}
+#library-catalogs td:last-child {
+  min-width: 72px;
+  white-space: nowrap;
+}
+#library-catalogs .button {
+  white-space: nowrap;
+}
+.catalog-state.loaded {
+  color: #9bbaff;
+  background: #678fff20;
+}
+.catalog-state.validated {
+  color: #70dcb6;
+  background: #70dcb618;
+}
+.catalog-state.attention {
+  color: #e8c37c;
+  background: #e8c37c18;
+}
+.library-legend {
+  margin-right: 16px;
+  font-size: 12px;
+}
+.library-legend.loaded {
+  color: #9bbaff;
+}
+.library-legend.validated {
+  color: #70dcb6;
+}
+.library-legend.attention {
+  color: #e8c37c;
+}
+.catalog-technical {
+  min-width: 220px;
+  max-width: 380px;
+}
+.catalog-technical summary {
+  cursor: pointer;
+}
+.technical-values {
+  max-width: 350px;
+  overflow: auto;
+  font-size: 11px;
+}
+.performance-status {
+  margin: 14px 0;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+}
+.performance-status summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+.performance-status p {
+  margin: 10px 0;
+}
+.performance-metrics {
+  font-size: 13px;
+  line-height: 1.7;
+}
+.swap-active {
+  color: #f3ac8d;
+  font-size: 13px;
+}
+:root[data-theme="light"] .catalog-state.loaded,
+:root[data-theme="light"] .library-legend.loaded {
+  color: #3155b4;
+}
+:root[data-theme="light"] .catalog-state.validated,
+:root[data-theme="light"] .library-legend.validated {
+  color: #187b69;
+}
+:root[data-theme="light"] .catalog-state.attention,
+:root[data-theme="light"] .library-legend.attention {
+  color: #8b651e;
+}
+.ocr-model-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  grid-column: 1/-1;
+}
+.ocr-model-actions small {
+  flex-basis: 100%;
+}

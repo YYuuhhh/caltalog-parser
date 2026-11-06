@@ -113,8 +113,9 @@ def test_preload_runs_concurrently_deduplicates_and_reports_ready(loader):
         jobs.start_model_load(job, settings, "qwen3.5:9b")
     assert len(server["calls"]) == 1
     assert server["calls"][0]["options"] == {
-        "num_ctx": 32768,
+        "num_ctx": settings.local_context_tokens,
         "num_gpu": 0,
+        "num_thread": settings.local_cpu_threads,
         "use_mmap": False,
     }
     assert server["calls"][0]["keep_alive"] == -1

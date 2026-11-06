@@ -36,6 +36,7 @@ let renderedRun = "",
   manualTools = [],
   manualJob;
 let ocrLanguageOverride = false;
+let ocrAvailability = { url: "", installed: false };
 let viewingStage = "catalog",
   processingStage,
   manualIndex = 0,
@@ -183,6 +184,14 @@ const parameterHelp = {
     "Maximum answer and thinking tokens for a local task. An answer cut off at this limit cannot pass validation.",
   local_temperature:
     "Sampling temperature for local reviews. Lower values make repeated checks more consistent.",
+  local_cpu_threads:
+    "CPU threads per model request. The default uses the detected physical core budget. Zero lets Ollama choose. More threads can reduce speed when memory bandwidth is the limit.",
+  ocr_check_model:
+    "Optional independent CPU OCR transcription for each page, supplied as evidence to the review models. Baidu Unlimited-OCR is an experimental CPU port and does not perform semantic or internet validation. It requires its optional container and installed weights.",
+  ocr_check_url:
+    "Private address of the optional CPU OCR service. The default matches the baidu-ocr Compose profile. No cloud fallback is used.",
+  ocr_check_tokens:
+    "Maximum new tokens for each independent OCR page. A truncated transcript blocks this check; increase this limit if necessary.",
   local_keep_loaded:
     "Keep weights resident until Ollama restarts, unloads them, or switches models. Task evidence remains fresh. Turn off to unload after every response and disable early preloading.",
   local_preload:
@@ -232,10 +241,16 @@ function helpButton(text, label) {
   info.addEventListener("blur", hideHelp);
   return info;
 }
+let helpAnchor;
 function showHelp(anchor, text) {
+  helpAnchor = anchor;
   const tip = $("parameter-tooltip");
   tip.textContent = text;
   tip.hidden = false;
+  positionHelp(anchor);
+}
+function positionHelp(anchor) {
+  const tip = $("parameter-tooltip");
   const rect = anchor.getBoundingClientRect();
   tip.style.left =
     Math.max(
@@ -247,6 +262,7 @@ function showHelp(anchor, text) {
     "px";
 }
 function hideHelp() {
+  helpAnchor = null;
   $("parameter-tooltip").hidden = true;
 }
 const terminal = new Set([
@@ -576,6 +592,52 @@ function build() {
   buildReasoningField("review-fields", "reasoning", "Stage 03 reasoning");
   add(
     "review-fields",
+    "ocr_check_model",
+    "Independent OCR checking model",
+    "select",
+    [
+      ["none", "No additional OCR model"],
+      ["baidu/Unlimited-OCR-cpu", "○ Baidu Unlimited-OCR · experimental CPU"],
+    ],
+  );
+  add("review-fields", "ocr_check_url", "CPU OCR server", "url");
+  inputs
+    .get("ocr_check_model")
+    .querySelector('option[value="baidu/Unlimited-OCR-cpu"]').disabled = true;
+  inputs.get("ocr_check_url").addEventListener("input", () => {
+    ocrAvailability = { url: "", installed: false };
+    refresh();
+  });
+  add("review-fields", "ocr_check_tokens", "OCR check output tokens", "number");
+  const ocrActions = node("div", "ocr-model-actions");
+  const ocrCheck = button("Check CPU OCR service", () =>
+    checkOCR().catch(showError),
+  );
+  const ocrInstall = button("Install Baidu weights", async () => {
+    try {
+      ocrInstall.disabled = true;
+      await api("/api/ocr/baidu/install", {
+        method: "POST",
+        body: JSON.stringify({ url: inputs.get("ocr_check_url").value }),
+      });
+      await checkOCR();
+    } catch (error) {
+      showError(error);
+      ocrInstall.disabled = false;
+    }
+  });
+  ocrInstall.id = "ocr-install";
+  ocrInstall.disabled = true;
+  const ocrStatus = node(
+    "small",
+    "help",
+    "Optional container: baidu-ocr. Check service availability before installation.",
+  );
+  ocrStatus.id = "ocr-status";
+  ocrActions.append(ocrCheck, ocrInstall, ocrStatus);
+  $("review-fields").append(ocrActions);
+  add(
+    "review-fields",
     "automatic_review",
     "Automatic Work review (uses Work allowance)",
     "checkbox",
@@ -613,6 +675,7 @@ function build() {
   add("local-fields", "local_context_tokens", "Context tokens", "number");
   add("local-fields", "local_output_tokens", "Maximum output tokens", "number");
   add("local-fields", "local_temperature", "Temperature", "number");
+  add("local-fields", "local_cpu_threads", "CPU threads", "number");
   add(
     "local-fields",
     "local_keep_loaded",
@@ -817,7 +880,12 @@ function refresh() {
   );
   const invalidSelection =
     !selected.size || [...selected.values()].some((v) => !v);
-  $("run").disabled = invalidSelection || missingModels.length > 0;
+  $("run").disabled =
+    invalidSelection ||
+    missingModels.length > 0 ||
+    (data.ocr_check_model !== "none" &&
+      (!ocrAvailability.installed ||
+        ocrAvailability.url !== data.ocr_check_url));
   $("preview").disabled = invalidSelection;
   $("queue-summary").replaceChildren();
   let total = 0;
@@ -1473,6 +1541,7 @@ function showView(view) {
   $("library-view").hidden = view !== "library";
   $("show-pipeline").classList.toggle("active", view === "pipeline");
   $("show-library").classList.toggle("active", view === "library");
+  $("sidebar-library").classList.toggle("active", view === "library");
   if (view === "library") loadLibrary().catch(showError);
 }
 async function upload(files) {
@@ -1632,6 +1701,7 @@ function duplicateElement(d) {
 }
 async function loadLibrary() {
   const data = await api("/api/library");
+  $("library-count").textContent = String(data.catalogs.length);
   const search = $("library-search").value.toLowerCase();
   $("library-manufacturers").replaceChildren(
     ...data.manufacturers
@@ -1647,7 +1717,7 @@ async function loadLibrary() {
           node(
             "small",
             "",
-            `${m.catalog_count} catalogs · ${m.validated_count || 0} validated${m.id === data.target_manufacturer_id ? " · TARGET" : ""}`,
+            `${m.catalog_count} catalogs · ${m.validated_count || 0} validated${m.pending_count ? ` · ${m.pending_count} awaiting parsing` : ""}${m.id === data.target_manufacturer_id ? " · TARGET" : ""}`,
           ),
         );
         return tile;
@@ -1666,6 +1736,9 @@ async function loadLibrary() {
             "Pages",
             "Tools",
             "Status",
+            "Processed / source modified",
+            "Confidence · average / worst",
+            "Technical history",
             "Result",
           ],
           catalogs.map((c) => [
@@ -1674,7 +1747,20 @@ async function loadLibrary() {
             c.revision,
             c.pages,
             c.product_count,
-            c.status,
+            node(
+              "span",
+              `catalog-state ${c.status === "loaded" || c.status === "registered" ? "loaded" : c.status === "validated" ? "validated" : "attention"}`,
+              c.status === "loaded" ? "Loaded · not parsed" : c.status,
+            ),
+            c.technical?.completed_at || c.source_modified_at
+              ? new Date(
+                  c.technical?.completed_at || c.source_modified_at,
+                ).toLocaleString()
+              : "—",
+            c.technical?.confidence?.average == null
+              ? "Not assessed"
+              : `${(100 * c.technical.confidence.average).toFixed(1)}% / ${(100 * c.technical.confidence.worst).toFixed(1)}%`,
+            catalogTechnical(c),
             c.last_run
               ? button("Open", () => {
                   selectedRun = c.last_run;
@@ -1685,11 +1771,7 @@ async function loadLibrary() {
               : "—",
           ]),
         )
-      : node(
-          "p",
-          "help",
-          "No registered catalogs match. Uploaded PDFs enter the library when you run them.",
-        ),
+      : node("p", "help", "No loaded or registered catalogs match."),
   );
   $("library-duplicates").replaceChildren(
     ...(data.duplicates.length
@@ -1701,6 +1783,210 @@ async function loadLibrary() {
             "No duplicate candidates found in structured library records.",
           ),
         ]),
+  );
+}
+function catalogTechnical(catalog) {
+  const info = catalog.technical;
+  if (!info) return "Awaiting parsing";
+  const detail = node("details", "catalog-technical");
+  detail.append(node("summary", "", "Models & measurements"));
+  detail.append(
+    node("p", "help", `Extractor: ${info.extraction_model || "Unknown"}`),
+  );
+  for (const check of info.checks || [])
+    detail.append(
+      node(
+        "p",
+        "help",
+        `${check.stage}: ${check.model} · ${check.reasoning} · ${check.provider}${check.tasks ? ` · ${check.tasks} tasks` : ""}${check.tokens_per_second != null ? ` · ${check.tokens_per_second} tokens/s` : ""}`,
+      ),
+    );
+  if (!info.checks?.length)
+    detail.append(
+      node(
+        "p",
+        "help",
+        "No recorded model execution. Requested models are not proof that a check ran.",
+      ),
+    );
+  const parameters = node(
+    "pre",
+    "technical-values",
+    JSON.stringify(info.parameters, null, 2),
+  );
+  detail.append(parameters);
+  for (const previous of (catalog.history || []).slice(1))
+    detail.append(
+      node(
+        "p",
+        "help",
+        `Previous run: ${previous.completed_at ? new Date(previous.completed_at).toLocaleString() : "unfinished"} · ${previous.status} · ${previous.run_id}`,
+      ),
+    );
+  for (const stage of info.stages || []) {
+    const elapsed =
+      stage.started_at && stage.completed_at
+        ? `${Math.round((Date.parse(stage.completed_at) - Date.parse(stage.started_at)) / 1000)}s`
+        : "—";
+    detail.append(
+      node("p", "help", `${stage.title}: ${stage.status} · ${elapsed}`),
+    );
+  }
+  if (info.performance?.peak)
+    detail.append(
+      node(
+        "p",
+        "help",
+        `Peak host CPU ${info.performance.peak.cpu_percent ?? "—"}% · RAM ${formatGiB(info.performance.peak.memory_used_bytes)} · swap ${formatGiB(info.performance.peak.swap_used_bytes)}. Host measurements include other applications.`,
+      ),
+    );
+  return detail;
+}
+function formatGiB(bytes) {
+  return bytes == null ? "—" : `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+}
+async function checkOCR() {
+  const url = inputs.get("ocr_check_url").value;
+  const info = await api("/api/ocr/baidu?url=" + encodeURIComponent(url));
+  if (url !== inputs.get("ocr_check_url").value) return;
+  ocrAvailability = { url, installed: !!info.installed };
+  const option = inputs
+    .get("ocr_check_model")
+    .querySelector('option[value="baidu/Unlimited-OCR-cpu"]');
+  option.textContent = `${info.installed ? "●" : "○"} Baidu Unlimited-OCR · experimental CPU${info.installed ? " · installed" : " · not installed"}`;
+  option.disabled = !info.installed;
+  const busy = info.installation?.status === "installing";
+  $("ocr-install").disabled = !info.available || info.installed || busy;
+  $("ocr-install").textContent = busy
+    ? "Installing…"
+    : info.installed
+      ? "Installed"
+      : "Install Baidu weights";
+  $("ocr-status").textContent = info.available
+    ? info.installed
+      ? "Pinned CPU model ready. OCR supplies evidence; the review model still makes the decision."
+      : busy
+        ? "Downloading pinned model files. Progress is logged in the Baidu CPU container."
+        : info.installation?.error ||
+          "CPU service ready; weights are not installed."
+    : "Start the optional baidu-ocr CPU container. See deploy/baidu-cpu/README.md.";
+  if (busy) setTimeout(() => checkOCR().catch(showError), 5000);
+  refresh();
+}
+function renderPerformance(run) {
+  let box = $("performance-status");
+  if (!box) {
+    box = node("details", "performance-status");
+    box.id = "performance-status";
+    box.open = true;
+  }
+  $(processingStage || "extract")
+    .querySelector(":scope > .stage-mini-progress")
+    .after(box);
+  const open = box.open,
+    p = run?.performance,
+    g = ["loading", "queued", "generating", "prefill"].includes(
+      run?.ocr_generation?.status,
+    )
+      ? run.ocr_generation
+      : run?.generation;
+  box.hidden = !p?.current && !g;
+  if (box.hidden) return;
+  box.replaceChildren(node("summary", "", "Live performance & bottlenecks"));
+  box.open = open;
+  const sample = p?.current || {},
+    peak = p?.peak || {};
+  const activeStage = run.stages?.find(
+    (stage) => stage.id === run.current_stage,
+  );
+  if (activeStage?.started_at)
+    box.append(
+      node(
+        "p",
+        "help",
+        `${activeStage.title} · ${Math.max(0, Math.round((activeStage.completed_at || run.completed_at ? Date.parse(activeStage.completed_at || run.completed_at) : Date.now()) / 1000 - Date.parse(activeStage.started_at) / 1000))}s wall time`,
+      ),
+    );
+  if (p?.hardware)
+    box.append(
+      node(
+        "p",
+        "help",
+        `${p.hardware.cpu} · ${formatGiB(p.hardware.memory_bytes)} usable RAM · ${p.hardware.physical_cores} physical cores · model threads ${run.config?.local_cpu_threads ?? "auto"}`,
+      ),
+    );
+  if (g?.model) {
+    const rate =
+      g.tokens_per_second == null
+        ? "Waiting for first token / processing prompt"
+        : `${g.tokens_estimated ? "≈ " : ""}${g.tokens_per_second} ${g.tokens_estimated ? "token chunks/s (estimate)" : "tokens/s (measured)"}`;
+    box.append(
+      node(
+        "p",
+        "performance-model",
+        `${g.model} · ${g.stage && g.stage !== run.current_stage ? `last ${g.stage} task · ` : ""}${g.status} · ${rate}`,
+      ),
+    );
+    if (g.started_at)
+      box.append(
+        node(
+          "small",
+          "help",
+          `Elapsed ${Math.round(["prefill", "generating", "loading", "queued"].includes(g.status) ? Date.now() / 1000 - g.started_at : (g.elapsed_seconds ?? Date.now() / 1000 - g.started_at))}s`,
+        ),
+      );
+    box.append(
+      node(
+        "p",
+        "help",
+        `${g.tokens ?? g.chunks ?? 0} ${g.tokens_estimated ? "chunks" : "tokens"} · first token ${g.first_token_seconds ?? "—"}s · prompt ${g.prompt_tokens_per_second ?? "—"} tokens/s`,
+      ),
+    );
+  }
+  box.append(
+    node(
+      "p",
+      "performance-metrics",
+      `CPU ${sample.cpu_percent ?? "—"}% · peak ${peak.cpu_percent ?? "—"}% | RAM available ${formatGiB(sample.memory_available_bytes)} · peak used ${formatGiB(peak.memory_used_bytes)} | I/O wait ${sample.iowait_percent ?? "—"}%`,
+    ),
+  );
+  const swapActive =
+    (sample.swap_in_bytes_sec || 0) + (sample.swap_out_bytes_sec || 0) > 0;
+  const swapKnown =
+    sample.swap_in_bytes_sec != null && sample.swap_out_bytes_sec != null;
+  box.append(
+    node(
+      "p",
+      swapActive ? "swap-active" : "help",
+      `Swap: ${formatGiB(sample.swap_used_bytes)} used${swapKnown ? ` · in ${Math.round(sample.swap_in_bytes_sec / 1024)} KiB/s · out ${Math.round(sample.swap_out_bytes_sec / 1024)} KiB/s${swapActive ? " · ACTIVE PAGING" : " · no active paging measured"}` : " · awaiting rate measurements"}`,
+    ),
+  );
+  for (const finding of p?.bottlenecks || [])
+    box.append(node("p", "help", finding.text));
+  const runner = p?.inference_process;
+  if (runner?.available)
+    box.append(
+      node(
+        "p",
+        runner.swap_bytes > 0 ? "swap-active" : "performance-metrics",
+        `Ollama processes: RAM ${formatGiB(runner.rss_bytes)} · sampled peak ${formatGiB(peak.inference_rss_bytes ?? runner.rss_bytes)} · swapped ${formatGiB(runner.swap_bytes)} · CPU cores used ${runner.cpu_cores_used ?? "—"} (peak ${peak.inference_cpu_cores ?? "—"}) · major faults/s ${runner.major_faults_per_second ?? "—"}`,
+      ),
+    );
+  for (const model of p?.inference_models || [])
+    box.append(
+      node(
+        "p",
+        "help",
+        `Ollama allocation: ${model.name} · ${formatGiB(model.size)} total · ${formatGiB(model.size_vram)} GPU · context ${model.context_length ?? "—"}. Allocation is not a measurement of resident RAM.`,
+      ),
+    );
+  box.append(
+    node(
+      "small",
+      "help",
+      p?.scope ||
+        "Token rates apply to the selected model. Resource counters describe this application host.",
+    ),
   );
 }
 function stageProgress(run, stage) {
@@ -2056,6 +2342,7 @@ function renderLocation(run) {
     $(id).hidden = true;
   }
   renderModelLoad(run);
+  renderPerformance(run);
   if (task) {
     const box = $(task.stage === "final" ? "final-pending" : "review-pending");
     box.hidden = false;
@@ -2874,7 +3161,16 @@ async function init() {
       open?.trigger.focus();
     }
   });
-  window.addEventListener("scroll", hideHelp, true);
+  window.addEventListener(
+    "scroll",
+    () => {
+      if (!helpAnchor) return;
+      const rect = helpAnchor.getBoundingClientRect();
+      if (rect.bottom < 0 || rect.top > innerHeight) hideHelp();
+      else positionHelp(helpAnchor);
+    },
+    true,
+  );
   const savedTheme = localStorage.getItem("catalogflow-theme") || "dark";
   document.documentElement.dataset.theme = savedTheme;
   const themeLabel = () =>
@@ -2893,6 +3189,7 @@ async function init() {
   try {
     bootstrap = await api("/api/bootstrap");
     build();
+    $("library-count").textContent = String(bootstrap.catalogs.length);
     refreshLocalModels();
     await loadMapping();
     await poll();
@@ -2903,6 +3200,7 @@ async function init() {
     };
     $("show-pipeline").onclick = () => showView("pipeline");
     $("show-library").onclick = () => showView("library");
+    $("sidebar-library").onclick = () => showView("library");
     $("catalog-search").oninput = renderSources;
     $("mapping-manufacturer").onchange = () => loadMapping().catch(showError);
     $("target-manufacturer").onchange = async () => {
@@ -3165,10 +3463,10 @@ async function init() {
           : "");
       refresh();
     };
-    await updateServices();
     setInterval(() => poll(), 3000);
     setInterval(() => updateServices().catch(showError), 15000);
     setInterval(() => pollModelInstalls(), 1500);
+    updateServices().catch(showError);
   } catch (error) {
     showError(error);
   }

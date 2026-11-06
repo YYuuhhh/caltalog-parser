@@ -289,7 +289,12 @@ def reusable_result(
             ):
                 continue
             if provider == "local":
-                runtime_only = {"keep_loaded", "load_timeout", "load_into_ram"}
+                runtime_only = {
+                    "keep_loaded",
+                    "load_timeout",
+                    "load_into_ram",
+                    "cpu_threads",
+                }
                 old = {
                     k: v for k, v in request["local"].items() if k not in runtime_only
                 }

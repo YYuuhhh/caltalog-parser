@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 
@@ -116,6 +117,34 @@ def ollama(tmp_path):
                 response["message"]["content"] = text[:80]
             elif style == "wrong_model":
                 response["model"] = "another-model"
+            if style in ("stream", "broken_stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-ndjson")
+                self.end_headers()
+                for part in [text[: len(text) // 2], text[len(text) // 2 :]]:
+                    self.wfile.write(
+                        (
+                            json.dumps(
+                                {
+                                    "model": model,
+                                    "done": False,
+                                    "message": {"content": part},
+                                }
+                            )
+                            + "\n"
+                        ).encode()
+                    )
+                    self.wfile.flush()
+                    time.sleep(0.02)
+                if style == "stream":
+                    response["message"] = {"content": ""}
+                    response.update(
+                        eval_count=20,
+                        eval_duration=2_000_000_000,
+                        prompt_eval_duration=1_000_000_000,
+                    )
+                    self.wfile.write((json.dumps(response) + "\n").encode())
+                return
             self.send_json(response)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -233,6 +262,39 @@ def test_qwen_channel_compatibility_preserves_evidence_gates(ollama):
     result = local.execute(task())
     assert result["status"] == "unverified" and result["confidence"] == 0
     assert result["findings"][0]["code"] == "LOCAL_UNGROUNDED_REVIEW"
+
+
+def test_streamed_response_retains_exact_usage_and_partial_evidence(ollama):
+    state, task = ollama
+    state["style"] = "stream"
+    folder = task()
+    assert local.execute(folder)["status"] == "passed"
+    progress = json.loads((folder / "generation.json").read_text())
+    assert progress["tokens"] == 20 and progress["tokens_per_second"] == 10
+    assert progress["prompt_tokens_per_second"] == 4167
+    assert progress["tokens_estimated"] is False
+    assert state["received"][0]["stream"] is True
+    assert len((folder / "ollama-stream.jsonl").read_text().splitlines()) == 3
+    state["style"] = "broken_stream"
+    folder = task()
+    with pytest.raises(ValueError, match="without a completed answer"):
+        local.execute(folder)
+    assert not (folder / "result.json").exists()
+    assert json.loads((folder / "generation.json").read_text())["status"] == "failed"
+    assert (folder / "ollama-response.json").is_file()
+
+
+def test_transport_failure_marks_generation_failed_before_any_stream(tmp_path):
+    class Offline:
+        def post(self, *args, **kwargs):
+            raise local.requests.ConnectionError("Inference server offline")
+
+    with pytest.raises(local.requests.ConnectionError):
+        local.stream_answer(
+            Offline(), "http://127.0.0.1:1", {"model": "fixture"}, tmp_path, 10
+        )
+    value = json.loads((tmp_path / "generation.json").read_text())
+    assert value["status"] == "failed" and "offline" in value["error"]
 
 
 @pytest.mark.parametrize(

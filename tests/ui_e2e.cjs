@@ -92,11 +92,11 @@ const base = process.env.PIPELINE_UI_URL || "http://127.0.0.1:7861";
     assert.equal(await page.locator("#page-fields").isVisible(), false);
     assert.equal(
       await page.locator("select[name=model]").inputValue(),
-      "qwen3-vl:8b-instruct",
+      boot.defaults.model,
     );
     assert.equal(
       await page.locator("select[name=final_model]").inputValue(),
-      "qwen3.5:9b",
+      boot.defaults.final_model,
     );
     assert.equal(
       await page.locator("select[name=review_provider]").inputValue(),

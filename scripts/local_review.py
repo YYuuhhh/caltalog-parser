@@ -20,6 +20,7 @@ import requests
 from jsonschema import ValidationError
 
 import subscription_review as review
+import system_diagnostics as diagnostics
 
 PRESETS = [
     {
@@ -266,11 +267,169 @@ def health(url):
 def load_options(config):
     if config.get("use_gpu"):
         raise ValueError("Local catalog review is CPU-only.")
-    return {
+    options = {
         "num_ctx": config.get("context_tokens", 32768),
         "num_gpu": 0,
         "use_mmap": not config.get("load_into_ram", True),
     }
+    if config.get("cpu_threads", 0):
+        options["num_thread"] = config["cpu_threads"]
+    return options
+
+
+def stream_answer(client, url, payload, folder, timeout):
+    """Retain streamed evidence and publish throughput without displaying reasoning."""
+    started, first, count, last_log = time.monotonic(), None, 0, 0
+    state = {
+        "status": "prefill",
+        "started_at": time.time(),
+        "model": payload["model"],
+        "stage": diagnostics.read_json(folder / "request.json", {}).get("stage"),
+        "task_id": folder.name,
+        "tokens_estimated": True,
+        "chunks": 0,
+        "tokens_per_second": None,
+    }
+    target = folder / "generation.json"
+    diagnostics.atomic(target, state)
+    content, thinking, result = [], [], {}
+    print(
+        f"Local model {payload['model']}: waiting for the first token (prompt/image processing).",
+        flush=True,
+    )
+    response = None
+    try:
+        response = client.post(
+            url + "/api/chat",
+            json=payload,
+            timeout=(10, timeout),
+            allow_redirects=False,
+            stream=True,
+        )
+        if (
+            not response.ok
+            or response.is_redirect
+            or "json" not in response.headers.get("Content-Type", "")
+        ):
+            try:
+                checked(response)
+            except ValueError:
+                diagnostics.atomic(
+                    folder / "ollama-http.json",
+                    {
+                        "status": response.status_code,
+                        "content_type": response.headers.get("Content-Type", ""),
+                        "body": response.text[:8192],
+                        "truncated": len(response.text) > 8192,
+                    },
+                )
+                raise
+        with (folder / "ollama-stream.jsonl").open("w") as saved:
+            for line in response.iter_lines(chunk_size=1):
+                if time.monotonic() - started > timeout:
+                    raise TimeoutError(
+                        "Local review response exceeded its total timeout; partial output is saved."
+                    )
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError as exc:
+                    diagnostics.atomic(
+                        folder / "ollama-http.json",
+                        {
+                            "status": response.status_code,
+                            "content_type": response.headers.get("Content-Type", ""),
+                            "body": line[:8192].decode(errors="replace"),
+                            "truncated": len(line) > 8192,
+                        },
+                    )
+                    raise ValueError(
+                        f"/api/chat returned HTTP {response.status_code} without valid JSON (body: {line[:300]!r}). Check the Ollama server log."
+                    ) from exc
+                saved.write(json.dumps(event, ensure_ascii=False) + "\n")
+                saved.flush()
+                if not isinstance(event, dict) or event.get("error"):
+                    raise ValueError(f"Ollama stream error: {str(event)[:500]}")
+                message = event.get("message") or {}
+                if not isinstance(message, dict):
+                    raise ValueError("Ollama stream returned an invalid message.")
+                for key, buffer in [("content", content), ("thinking", thinking)]:
+                    value = message.get(key, "")
+                    if not isinstance(value, str):
+                        raise ValueError(
+                            f"Ollama stream returned invalid message.{key}."
+                        )
+                    buffer.append(value)
+                if message.get("content") or message.get("thinking"):
+                    count += 1
+                    first = first or time.monotonic()
+                result.update({k: v for k, v in event.items() if k != "message"})
+                result["message"] = {
+                    **message,
+                    "content": "".join(content),
+                    "thinking": "".join(thinking),
+                }
+                elapsed = time.monotonic() - started
+                state.update(
+                    status="generating" if first else "prefill",
+                    chunks=count,
+                    elapsed_seconds=round(elapsed, 2),
+                    first_token_seconds=round(first - started, 2) if first else None,
+                    tokens_per_second=round(
+                        max(0, count - 1) / max(0.001, time.monotonic() - first), 2
+                    )
+                    if first and count > 1
+                    else None,
+                )
+                if event.get("done"):
+                    duration = event.get("eval_duration")
+                    state.update(
+                        status="completed",
+                        tokens=event.get("eval_count"),
+                        tokens_estimated=False,
+                        tokens_per_second=round(event["eval_count"] * 1e9 / duration, 3)
+                        if duration and event.get("eval_count")
+                        else None,
+                        prompt_tokens=event.get("prompt_eval_count"),
+                        prompt_tokens_per_second=round(
+                            event["prompt_eval_count"]
+                            * 1e9
+                            / event["prompt_eval_duration"],
+                            2,
+                        )
+                        if event.get("prompt_eval_duration")
+                        and event.get("prompt_eval_count")
+                        else None,
+                    )
+                diagnostics.atomic(target, state)
+                if elapsed - last_log >= 5 or event.get("done"):
+                    print(
+                        f"Local review: {state['status']} · {elapsed:.0f}s · {state.get('tokens', count)} {'tokens' if not state['tokens_estimated'] else 'token chunks'} · {state['tokens_per_second']} /s",
+                        flush=True,
+                    )
+                    last_log = elapsed
+                if event.get("done"):
+                    break
+        if not result.get("done"):
+            raise ValueError(
+                "Ollama stream ended without a completed answer; partial output is saved."
+            )
+        diagnostics.atomic(folder / "ollama-response.json", result)
+        return result
+    except Exception as exc:
+        state.update(
+            status="failed",
+            error=str(exc),
+            elapsed_seconds=round(time.monotonic() - started, 2),
+        )
+        diagnostics.atomic(target, state)
+        if result:
+            diagnostics.atomic(folder / "ollama-response.json", result)
+        raise
+    finally:
+        if response is not None:
+            response.close()
 
 
 def load_model(client, url, model, config):
@@ -636,7 +795,7 @@ def execute(folder):
             raise ValueError("Local catalog review is CPU-only.")
         payload = {
             "model": request["model"],
-            "stream": False,
+            "stream": True,
             "keep_alive": -1 if config.get("keep_loaded", True) else 0,
             "format": schema,
             "messages": [
@@ -678,25 +837,9 @@ def execute(folder):
         # Cold HDD loading has its own budget; each fresh review gets its full
         # response timeout after the weights are ready.
         deadline = time.monotonic() + request.get("timeout", 1800)
-        raw_response = client.post(
-            url + "/api/chat",
-            json=payload,
-            timeout=(10, max(1, deadline - time.monotonic())),
-            allow_redirects=False,
+        response = stream_answer(
+            client, url, payload, folder, max(1, deadline - time.monotonic())
         )
-        try:
-            response = checked(raw_response)
-        except ValueError:
-            review.atomic_json(
-                folder / "ollama-http.json",
-                {
-                    "status": raw_response.status_code,
-                    "content_type": raw_response.headers.get("Content-Type", ""),
-                    "body": raw_response.text[:8192],
-                    "truncated": len(raw_response.text) > 8192,
-                },
-            )
-            raise
         review.atomic_json(folder / "ollama-response.json", response)
         message = response.get("message")
         message = message if isinstance(message, dict) else {}
@@ -715,7 +858,14 @@ def execute(folder):
         }
         execution["usage"] = {
             k: response.get(k)
-            for k in ("prompt_eval_count", "eval_count", "total_duration")
+            for k in (
+                "prompt_eval_count",
+                "prompt_eval_duration",
+                "eval_count",
+                "eval_duration",
+                "total_duration",
+                "load_duration",
+            )
         }
         diagnostics.update(execution["usage"])
         review.atomic_json(folder / "execution.json", execution)

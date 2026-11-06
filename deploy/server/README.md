@@ -123,6 +123,42 @@ validation fails. HTTP errors retain a bounded body in `ollama-http.json`.
 The compatibility path accepts only a whole schema-valid result for the current
 task, with thinking Off and Qwen3-VL; incomplete or unrelated answers remain failed.
 
+## System defaults, diagnostics and library
+
+New runs use hardware-selected CPU defaults. The reported 117 GiB server selects
+the 128 GB profile with Qwen3-VL 32B Thinking BF16, temperature 0, thinking on,
+20 RAW cells per review task, 144 DPI, 24576 context tokens and a 7200-second
+response budget. CPU threads follow affinity/quota and physical-core detection.
+Existing saved runs keep their parameters; use a new run or Reuse settings to
+change them. The app does not change system swap configuration.
+
+The stage performance dropdown records CPU/RAM peaks, active swap I/O, I/O wait,
+first-token latency and model token rates. Stream chunk rates are estimates;
+completed response rates use actual Ollama counters. Counters describe the host,
+not exclusively the model. The read-only `inference-monitor` container shares
+Ollama's PID namespace to report actual RSS/peak RSS, VmSwap, CPU core use and
+major faults; it uses no Docker socket or host PID access. Host swap traffic and
+file-backed paging remain separate measurements. A memory-bandwidth bottleneck cannot be confirmed
+from these counters alone. Samples remain in `logs/ui-runs/<run-id>/performance.*`.
+
+To add the monitor to an existing running stack while retaining Ollama:
+
+```bash
+git pull --ff-only
+sudo python3 scripts/runtime_bundle.py build
+sudo docker compose up -d --no-deps --no-build --pull never inference-monitor pipeline-ui
+```
+
+The bottom-left library shortcut includes unparsed PDFs and technical run history.
+For the optional pinned CPU OCR model, follow
+[Baidu Unlimited-OCR CPU setup](../baidu-cpu/README.md). It has a separate dependency
+archive and persistent weights; the default stack does not start or download it.
+
+For a different inference host, set `INFERENCE_MONITOR_URL` and
+`INFERENCE_MONITOR_OLLAMA_URL` together in `.env`. Process counters are used only
+when the selected Ollama URL matches that configured target; host-wide counters
+always describe the application host.
+
 ## Full rebuild after removing Docker cache/images/volumes
 
 Keep the ordinary host files in `artifacts/runtime/` (or your chosen external

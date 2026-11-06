@@ -749,6 +749,50 @@ def test_stoppage_shows_local_response_diagnostics_without_thinking_text(workspa
     assert "PRIVATE_THINKING_FIXTURE" not in json.dumps(details)
 
 
+def test_library_includes_unparsed_files_and_records_actual_review_models(workspace):
+    _, source, client = workspace
+    initial = client.get("/api/library").json()["catalogs"]
+    assert len(initial) == 1 and initial[0]["status"] == "loaded"
+    assert initial[0]["technical"] is None
+    catalog_id = ui.library().register(
+        "guhring", source, registry.digest(source), 3, "2026"
+    )
+    job, task_id = "a" * 32, "b" * 32
+    ui.library().status(catalog_id, "needs_review", job)
+    folder = ui.queue() / task_id
+    folder.mkdir(parents=True)
+    sr.atomic_json(
+        folder / "execution.json",
+        {
+            "model": "qwen3-vl:32b-thinking-bf16",
+            "reasoning": "medium",
+            "provider": "ollama_local",
+        },
+    )
+    ui.jobs.save(
+        job,
+        {
+            "id": job,
+            "catalog_id": catalog_id,
+            "created_at": "2026-11-06T13:00:00Z",
+            "completed_at": "2026-11-06T14:00:00Z",
+            "status": "quality_blocked",
+            "config": config(source).model_dump(),
+            "stages": [],
+            "review_tasks": [
+                {"id": task_id, "stage": "correctness", "status": "passed"}
+            ],
+        },
+    )
+    items = client.get("/api/library").json()["catalogs"]
+    assert len(items) == 1
+    technical = items[0]["technical"]
+    assert technical["completed_at"] == "2026-11-06T14:00:00Z"
+    assert technical["checks"][0]["model"] == "qwen3-vl:32b-thinking-bf16"
+    assert len(items[0]["history"]) == 1
+    assert client.get("/api/system").json()["hardware"]["memory_bytes"] > 0
+
+
 def test_review_binding_required_checks_sources_and_confidence(tmp_path):
     request = task(tmp_path, "final", confidence_threshold=0.95)
     assert sr.validate_result(request, result(request))["status"] == "passed"
@@ -1762,12 +1806,14 @@ def test_defaults_enable_independent_local_vision_models_for_both_stages(
     _, source, client = workspace
     defaults = client.get("/api/bootstrap").json()["defaults"]
     assert defaults["review_provider"] == defaults["final_provider"] == "local"
-    assert defaults["model"] == "qwen3-vl:8b-instruct"
-    assert defaults["final_model"] == "qwen3.5:9b"
+    assert defaults["model"] == ui.SYSTEM_DEFAULTS["model"]
+    assert defaults["final_model"] == ui.SYSTEM_DEFAULTS["final_model"]
     assert defaults["automatic_review"]
     assert defaults["local_preload"] and defaults["local_load_into_ram"]
     assert defaults["local_load_timeout"] == 7200
-    assert defaults["reasoning"] == "none" and defaults["final_reasoning"] == "medium"
+    assert defaults["reasoning"] == defaults["final_reasoning"] == "medium"
+    assert defaults["local_temperature"] == 0
+    assert defaults["review_timeout"] == 7200
     assert "work_mode" not in defaults
     local_config = {**defaults, "source_pdf": str(source)}
     assert client.post("/api/plan", json=local_config).status_code == 200
