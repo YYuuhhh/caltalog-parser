@@ -1,0 +1,4 @@
+mineru==3.4.5
+torch==2.9.1+cpu
+torchvision==0.24.1+cpu
+six==1.17.0

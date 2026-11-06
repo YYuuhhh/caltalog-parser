@@ -1,0 +1,49 @@
+ARG PYTHON_VERSION=3.11
+FROM python:${PYTHON_VERSION}-slim-bookworm AS base
+
+ARG MINERU_VERSION=3.4.5
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1 \
+    MINERU_VERSION=${MINERU_VERSION}
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
+        fontconfig \
+        fonts-noto-cjk \
+        fonts-noto-core \
+        libgl1 \
+        libglib2.0-0 \
+        libgomp1 \
+        poppler-utils \
+        tini \
+    && fc-cache -f \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM base AS cpu-deps
+
+COPY deploy/runtime/mineru.constraints.txt /opt/catalogflow/mineru.constraints.txt
+RUN python -m pip install \
+        --index-url https://download.pytorch.org/whl/cpu \
+        'torch==2.9.1+cpu' \
+        'torchvision==0.24.1+cpu' \
+    && python -m pip install \
+        --constraint /opt/catalogflow/mineru.constraints.txt \
+        "mineru[pipeline,gradio]==${MINERU_VERSION}" \
+        'six==1.17.0' \
+        'lxml>=5,<7' \
+        'cryptography>=43,<47' \
+        'openpyxl>=3.1,<4' \
+        'XlsxWriter>=3.2,<4' \
+        'pytest>=8,<9'
+
+
+FROM cpu-deps
+ENV MINERU_DEVICE_MODE=cpu
+ARG MINERU_MODEL_SOURCE=huggingface
+RUN mineru-models-download -s "${MINERU_MODEL_SOURCE}" -m pipeline
+RUN python -c "from mineru.model.utils.pytorchocr.data.imaug import operators"
+ENV MINERU_MODEL_SOURCE=local

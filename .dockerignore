@@ -5,3 +5,17 @@ logs
 catalogs
 __pycache__
 *.pyc
+.env
+.env.*
+secrets
+backups
+artifacts
+dist
+.runtime
+node_modules
+.venv
+.pytest_cache
+.ruff_cache
+**/__pycache__
+**/node_modules
+**/models

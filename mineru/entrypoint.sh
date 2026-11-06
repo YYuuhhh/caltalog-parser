@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+if [[ -f /opt/catalogflow/dependencies.lock.json ]]; then
+  python /opt/catalogflow/verify_runtime.py check --role mineru
+fi
+
 mode="${MINERU_SERVICE:-${1:-api}}"
 if [[ $# -gt 0 ]]; then
   shift

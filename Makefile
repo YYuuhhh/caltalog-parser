@@ -3,6 +3,7 @@ COMPOSE := docker compose
 LEGACY_COMPOSE := docker compose -f docker-compose.yml -f docker-compose.legacy.yml
 TOOLS_IMAGE := guhring-parser-tools:3
 MODEL_RAM ?= 32
+RUNTIME_BUNDLE ?= $(CURDIR)/artifacts/runtime
 WORK_REVIEW_WORKER ?= 0
 TOOLS_RUN := $(COMPOSE) run --rm --no-deps --name CatalogFlow_tools_$$(date +%s%N) tools
 OPENAI_RUN := $(LEGACY_COMPOSE) run --rm --no-deps --name CatalogFlow_openai-processor_$$(date +%s%N) openai-processor
@@ -19,7 +20,20 @@ AUDIT_ARGS ?=
 .PHONY: build start stop restart status logs update ensure-tools ensure-etl-dirs prepare-test prepare-vlm-test parse-test parse-test-openai parse-test-structure parse-test-openai-structure gpu-parse-test parse-folder export validate verify-test verify-vlm openai-process openai-test structure structure-reviewed validate-structure structure-aliases test full-test legacy-full-test review-worker legacy-start mineru-ui gpu-build gpu-start backup register-catalog verify-inventory bind-raw parse-manifest openai-completeness structure-complete compare-revisions audit
 
 build:
-	$(COMPOSE) build mineru tools
+	python3 scripts/runtime_bundle.py build --bundle "$(RUNTIME_BUNDLE)"
+
+.PHONY: rebuild deps-prepare deps-verify deps-restore
+rebuild:
+	python3 scripts/runtime_bundle.py rebuild --bundle "$(RUNTIME_BUNDLE)"
+
+deps-prepare:
+	python3 scripts/runtime_bundle.py prepare --bundle "$(RUNTIME_BUNDLE)" $(DEPS_ARGS)
+
+deps-verify:
+	python3 scripts/runtime_bundle.py verify --bundle "$(RUNTIME_BUNDLE)"
+
+deps-restore:
+	python3 scripts/runtime_bundle.py restore --bundle "$(RUNTIME_BUNDLE)"
 
 .PHONY: local-models
 local-models:
@@ -30,7 +44,7 @@ local-models:
 cpu-server-package:
 	bash scripts/package_cpu_server.sh
 
-start: ensure-workbench-dirs
+start: ensure-workbench-dirs build
 	$(COMPOSE) up -d
 	@if [ "$(WORK_REVIEW_WORKER)" = "1" ]; then python3 scripts/review_worker_service.py start; fi
 
@@ -50,13 +64,12 @@ logs:
 	$(COMPOSE) logs --tail=200 -f
 
 update:
-	$(COMPOSE) pull --ignore-buildable
-	$(COMPOSE) build --pull mineru tools
+	$(MAKE) build
 	$(COMPOSE) up -d
 	@if [ "$(WORK_REVIEW_WORKER)" = "1" ]; then python3 scripts/review_worker_service.py restart; fi
 
 ensure-tools:
-	@docker image inspect $(TOOLS_IMAGE) >/dev/null 2>&1 || $(COMPOSE) build tools
+	@docker image inspect $(TOOLS_IMAGE) >/dev/null 2>&1 || $(MAKE) build
 
 ensure-etl-dirs:
 	mkdir -p parsed/etl logs/etl
@@ -142,13 +155,11 @@ legacy-full-test: ensure-tools
 
 ui: pipeline-ui
 
-pipeline-ui: ensure-workbench-dirs
-	$(COMPOSE) build tools
+pipeline-ui: ensure-workbench-dirs build
 	$(COMPOSE) up -d mineru local-llm pipeline-ui
 	@if [ "$(WORK_REVIEW_WORKER)" = "1" ]; then python3 scripts/review_worker_service.py start; fi
 
-mineru-ui:
-	$(COMPOSE) build mineru
+mineru-ui: build
 	COMPOSE_PROFILES=$(CPU_PROFILES),mineru-ui $(LEGACY_COMPOSE) up -d mineru-ui
 
 gpu-build:

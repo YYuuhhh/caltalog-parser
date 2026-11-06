@@ -11,8 +11,10 @@ cd catalogflow
 cp deploy/server/.env.example .env
 sed -i "s/^LOCAL_UID=.*/LOCAL_UID=$(id -u)/;s/^LOCAL_GID=.*/LOCAL_GID=$(id -g)/" .env
 mkdir -p catalogs/input catalogs/uploads catalogs/imports/guhring catalogs/library parsed logs
-docker compose up -d --build
-docker compose ps
+sudo python3 scripts/runtime_bundle.py prepare
+sudo python3 scripts/runtime_bundle.py build
+sudo docker compose up -d --no-build --pull never
+sudo docker compose ps
 ```
 
 `CatalogFlow_init-storage` runs once before the UI starts. It prepares the
@@ -62,24 +64,17 @@ To update an existing checkout, retain its `.env` and runtime data:
 
 ```bash
 git pull --ff-only
-docker compose up -d --build
+sudo python3 scripts/runtime_bundle.py build
+sudo docker compose up -d --no-build --pull never
 ```
 
-If extraction fails with `ModuleNotFoundError: No module named 'six'`, the old
-MinerU image is missing an OCR dependency. Repair the running container with:
+Older MinerU images missing `six` cannot be sealed as valid dependencies. Prepare
+a new runtime once, then rebuild the application:
 
 ```bash
-sudo docker compose exec -T mineru python -m pip install 'six==1.17.0'
-sudo docker compose restart mineru
-```
-
-After the service is healthy, use **Resume saved run** to retry failed pages.
-The updated image installs `six` and verifies the OCR imports during its build.
-Rebuild it to retain the fix when the container is recreated:
-
-```bash
-git pull --ff-only
-sudo docker compose up -d --build mineru pipeline-ui
+sudo python3 scripts/runtime_bundle.py prepare --fresh --refresh
+sudo python3 scripts/runtime_bundle.py rebuild
+sudo docker compose up -d --no-build --pull never mineru pipeline-ui
 ```
 
 Parser HTTP failures now retain the response details in the page manifest and a
@@ -104,3 +99,22 @@ each review response gets its full response timeout after loading. For an
 existing saved run, these new options receive the defaults on Resume. To change
 them explicitly, use Reuse settings and start with the updated settings.
 The model-loading card reports elapsed time, readiness or the failure reason.
+
+## Full rebuild after removing Docker cache/images/volumes
+
+Keep the ordinary host files in `artifacts/runtime/` (or your chosen external
+bundle directory). They contain the dependency images and complete version locks;
+Docker cleanup does not remove them. Then run:
+
+```bash
+sudo python3 scripts/runtime_bundle.py rebuild
+sudo docker compose up -d --no-build --pull never
+```
+
+This verifies archive checksums before restoring missing images and rebuilds only
+the small application layers with no cache and no build networking. Library/OCR
+asset downloads occur only when initially preparing or explicitly upgrading the
+bundle. Docker still needs to read/import the archive after an image wipe.
+Deleting the host bundle too requires downloading dependencies again.
+
+[Bundle storage, checks and upgrade instructions](../runtime/README.md).

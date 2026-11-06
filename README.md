@@ -9,6 +9,16 @@ The current workbench uses **local upload detection → MinerU on CPU → page r
 make ui
 ```
 
+Large dependencies are prepared separately and exported to **`artifacts/runtime/`** on the host. `make ui` restores/checks that bundle before its small application builds. After preparing it once, a full application rebuild can run without Docker build cache, volumes or network downloads:
+
+```bash
+sudo make deps-prepare
+sudo make rebuild
+sudo docker compose up -d --no-build --pull never
+```
+
+Keep the host bundle when cleaning Docker. It contains version-locked dependency images and SHA-256 manifests, including OCR assets; Qwen weights and catalogs remain separate. See [dependency bundles and offline rebuilds](deploy/runtime/README.md) for alternate storage, first-time preparation and deliberate upgrades.
+
 Open <http://127.0.0.1:7861>. To use a Windows source folder from WSL, set this in `.env`:
 
 ```dotenv

@@ -181,6 +181,7 @@ services:
     profiles: ["gpu"]
     build:
       context: ./mineru
+      dockerfile: Dockerfile.legacy
       args:
         MINERU_VERSION: ${MINERU_VERSION:-3.4.5}
         MINERU_TARGET: gpu
@@ -241,7 +242,8 @@ services:
     image: guhring-parser-tools:3
     profiles: ["openai"]
     build:
-      context: ./scripts
+      context: .
+      dockerfile: scripts/Dockerfile
     user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
     entrypoint: ["python", "/scripts/openai_process.py"]
     environment:

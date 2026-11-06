@@ -2,8 +2,11 @@ name: guhring-parser
 
 x-tools: &tools
   image: guhring-parser-tools:3
+  pull_policy: never
   build:
-    context: ./scripts
+    context: .
+    dockerfile: scripts/Dockerfile
+    network: none
   user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
   volumes:
     - ./catalogs:/catalogs
@@ -21,10 +24,13 @@ services:
   init-storage:
     container_name: CatalogFlow_init-storage
     image: guhring-parser-tools:3
+    pull_policy: never
     build:
-      context: ./scripts
+      context: .
+      dockerfile: scripts/Dockerfile
+      network: none
     user: "0:0"
-    entrypoint: ["python", "/scripts/prepare_runtime.py"]
+    command: ["python", "/scripts/prepare_runtime.py"]
     environment:
       LOCAL_UID: ${LOCAL_UID:-1000}
       LOCAL_GID: ${LOCAL_GID:-1000}
@@ -61,12 +67,11 @@ services:
   mineru:
     container_name: CatalogFlow_mineru
     image: guhring-parser-mineru-cpu:${MINERU_VERSION:-3.4.5}
+    pull_policy: never
     build:
-      context: ./mineru
-      args:
-        MINERU_VERSION: ${MINERU_VERSION:-3.4.5}
-        MINERU_TARGET: cpu
-        MINERU_MODEL_SOURCE: ${MINERU_MODEL_SOURCE:-huggingface}
+      context: .
+      dockerfile: mineru/Dockerfile
+      network: none
     environment:
       MINERU_MODEL_SOURCE: local
       MINERU_MODEL_REVISION: mineru-3.4.5-pipeline
@@ -108,7 +113,7 @@ services:
         condition: service_completed_successfully
       local-llm:
         condition: service_healthy
-    entrypoint: ["python", "/scripts/pipeline_ui.py"]
+    command: ["python", "/scripts/pipeline_ui.py"]
     environment:
       MINERU_API_URL: http://mineru:8000
       PIPELINE_UI_MAX_UPLOAD_MB: ${PIPELINE_UI_MAX_UPLOAD_MB:-512}
@@ -144,7 +149,7 @@ services:
     container_name: CatalogFlow_catalog-etl
     <<: *tools
     profiles: [etl]
-    entrypoint: ["python", "/scripts/catalog_etl.py"]
+    command: ["python", "/scripts/catalog_etl.py"]
     volumes:
       - ./parsed:/inputs:ro
       - ./parsed/etl:/outputs

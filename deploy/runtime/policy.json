@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "python_minor": "3.11",
+  "os": "linux",
+  "architecture": "amd64",
+  "ollama_version": "0.32.5",
+  "tools": {
+    "required": ["fastapi", "httpx", "httpx2", "jsonschema", "lxml", "langdetect", "openpyxl", "pypdf", "pymupdf", "pyyaml", "pytest", "requests", "uvicorn", "xlsxwriter", "cryptography"],
+    "exact": {}
+  },
+  "mineru": {
+    "required": ["mineru", "torch", "torchvision", "six", "pypdf", "requests", "fastapi", "python-multipart"],
+    "exact": {"mineru": "3.4.5", "torch": "2.9.1+cpu", "torchvision": "0.24.1+cpu", "six": "1.17.0"}
+  }
+}

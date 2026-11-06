@@ -1,30 +1,15 @@
-# syntax=docker/dockerfile:1.7
-
-FROM python:3.11-slim-bookworm
-
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1 \
+ARG TOOLS_RUNTIME_IMAGE=catalogflow-tools-deps:py311-v1
+FROM ${TOOLS_RUNTIME_IMAGE}
+ARG TOOLS_RUNTIME_LOCK_SHA=
+ENV CATALOGFLOW_DEPENDENCY_SHA256=${TOOLS_RUNTIME_LOCK_SHA} \
     PYTHONUNBUFFERED=1
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      tesseract-ocr tesseract-ocr-eng tesseract-ocr-deu tesseract-ocr-rus \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN python -m pip install \
-      'cryptography>=43,<47' \
-      'fastapi>=0.115,<1' \
-      'httpx>=0.28,<1' \
-      'httpx2>=2,<3' \
-      'jsonschema>=4.23,<5' \
-      'lxml>=5,<7' \
-      'langdetect>=1.0.9,<2' \
-      'openpyxl>=3.1,<4' \
-      'pypdf>=5,<7' \
-      'PyMuPDF>=1.26,<2' \
-      'PyYAML>=6,<7' \
-      'pytest>=8,<9' \
-      'requests>=2.32,<3' \
-      'uvicorn>=0.34,<1' \
-      'XlsxWriter>=3.2,<4'
-
+COPY deploy/runtime/verify_runtime.py deploy/runtime/entrypoint.py deploy/runtime/policy.json /opt/catalogflow/
+RUN python /opt/catalogflow/verify_runtime.py check --role tools
+COPY scripts /scripts
+COPY ui /ui
+COPY schemas /schemas
+COPY mappings /mappings
+COPY tests /tests
+COPY mineru /mineru-src
 WORKDIR /work
+ENTRYPOINT ["python", "/opt/catalogflow/entrypoint.py"]
