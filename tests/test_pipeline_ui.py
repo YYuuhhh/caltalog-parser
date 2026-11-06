@@ -818,11 +818,26 @@ def test_review_stages_dispatch_independent_models_and_reasoning(
         reasoning="low",
         final_reasoning="max",
     )
-    state = {"review_tasks": []}
+    state = {
+        "review_tasks": [],
+        "stages": [
+            {"id": stage, "status": "running"}
+            for stage in ["correctness", "completeness", "internet", "mapping", "final"]
+        ],
+    }
     seen = []
+    seen_progress = []
 
     def simulated_result(queue, request, cancelled, timeout, checkpoint=None):
         seen.append(request)
+        seen_progress.append(
+            (
+                request["stage"],
+                next(s for s in state["stages"] if s["id"] == request["stage"])[
+                    "progress"
+                ]["percent"],
+            )
+        )
         response = result(request, status="unverified")
         for check in response["checks"]:
             check["status"] = "unverified"
@@ -832,6 +847,12 @@ def test_review_stages_dispatch_independent_models_and_reasoning(
     for stage in ["correctness", "completeness", "internet", "mapping", "final"]:
         assert not ui.jobs.review_stage(job, stage, settings, state, fixture_root)
     assert len(seen) == 10
+    for stage in state["stages"]:
+        assert [percent for name, percent in seen_progress if name == stage["id"]] == [
+            0,
+            50,
+        ]
+        assert stage["progress"]["percent"] == 99
     for request in seen:
         final = request["stage"] == "final"
         assert request["model"] == ("gpt-6-astra" if final else "gpt-6-sol")
@@ -841,6 +862,53 @@ def test_review_stages_dispatch_independent_models_and_reasoning(
         sr.validate_evidence(request, ui.queue() / request["task_id"])
         if final:
             assert request["context"]["products"]
+
+
+@pytest.mark.parametrize("scope", [False, True])
+def test_live_extraction_progress_counts_saved_pages_and_quality_in_scope(
+    workspace, scope
+):
+    _, _, client = workspace
+    job = "c" * 32
+    ui.jobs.active = job
+    folder = ui.jobs.folder(job)
+    folder.mkdir(parents=True)
+    state = {
+        "id": job,
+        "status": "running",
+        "config": {"page_selection": scope, "first_page": 2, "last_page": 3},
+        "stages": [{"id": "parse", "title": "Extract", "status": "running"}],
+        "review_tasks": [],
+    }
+    ui.jobs.save(job, state)
+    manifest = {
+        "page_states": [
+            {"page_idx": 0, "status": "failed"},
+            {"page_idx": 1, "status": "parsed"},
+            {"page_idx": 2, "status": "processing"},
+        ]
+    }
+    (folder / "catalog.yaml").write_text(yaml.safe_dump(manifest))
+    live = client.get(f"/api/runs/{job}").json()["stages"][0]["progress"]
+    assert live["percent"] == pytest.approx(40 if scope else 80 / 3)
+    assert ("1/2 pages saved" if scope else "1/3 pages saved") in live["detail"]
+    assert ("failed" in live["detail"]) == (not scope)
+    assert (
+        "progress" not in json.loads((folder / "state.json").read_text())["stages"][0]
+    )
+    for page in manifest["page_states"]:
+        page["status"] = "parsed"
+    (folder / "catalog.yaml").write_text(yaml.safe_dump(manifest))
+    state["quality"] = [{"page": 2, "confidence": 0.9}]
+    ui.jobs.save(job, state)
+    checking = client.get(f"/api/runs/{job}").json()["stages"][0]["progress"]
+    assert checking["percent"] == pytest.approx(90 if scope else 80 + 20 / 3)
+    assert "Quality check" in checking["detail"]
+    state["quality"] = [{"page": page + 1, "confidence": 0.9} for page in range(3)]
+    ui.jobs.save(job, state)
+    assert (
+        client.get(f"/api/runs/{job}").json()["stages"][0]["progress"]["percent"] == 99
+    )
 
 
 def test_work_handoff_rejects_wrong_tasks_and_cancelled_results(workspace):

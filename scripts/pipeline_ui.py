@@ -571,7 +571,51 @@ class Jobs:
             state.pop("stoppage", None)
         state["files"] = self.files(job)
         state["confidence"] = outputs.confidence(state)
+        self.extraction_progress(job, state)
         return state
+
+    def extraction_progress(self, job, state):
+        stage = next((s for s in state["stages"] if s["id"] == "parse"), None)
+        if not stage or stage["status"] in ("completed", "skipped"):
+            return
+        try:
+            manifest = yaml.safe_load((self.folder(job) / "catalog.yaml").read_text())
+            config = state.get("config", {})
+            first = (
+                config.get("first_page", 1) - 1 if config.get("page_selection") else 0
+            )
+            last = config.get("last_page") if config.get("page_selection") else None
+            pages = [
+                p
+                for p in manifest["page_states"]
+                if p["page_idx"] >= first and (last is None or p["page_idx"] < last)
+            ]
+            if not pages:
+                return
+            saved = sum(p["status"] in ("parsed", "empty") for p in pages)
+            failed = sum(p["status"] == "failed" for p in pages)
+            detail = f"{saved}/{len(pages)} pages saved"
+            percent = 80 * saved / len(pages)
+            if saved == len(pages):
+                selected = {p["page_idx"] + 1 for p in pages}
+                assessed = sum(
+                    p.get("page") in selected for p in state.get("quality", [])
+                )
+                percent += 20 * assessed / len(pages)
+                detail = f"Quality check · {assessed}/{len(pages)} pages"
+            elif failed:
+                detail += f" · {failed} failed"
+            else:
+                current = next((p for p in pages if p["status"] == "processing"), None)
+                if current:
+                    detail += f" · PDF page {current['page_idx'] + 1}"
+            stage["progress"] = {
+                "percent": min(99, percent),
+                "estimated": True,
+                "detail": detail,
+            }
+        except (OSError, yaml.YAMLError, KeyError, TypeError, AttributeError):
+            pass  # A missing/corrupt diagnostic must not prevent reading a run.
 
     def stoppage_info(self, job, state, reason=None, include_page=False):
         kind = state["status"]
@@ -1098,9 +1142,13 @@ class Jobs:
         )
         pdf = fitz.open(config.source_pdf)
         try:
-            for page in manifest["page_states"]:
-                if page["status"] != "parsed":
-                    continue
+            review_pages = [
+                p for p in manifest["page_states"] if p["status"] == "parsed"
+            ]
+            progress = next(
+                (s for s in state.get("stages", []) if s["id"] == stage), {}
+            )
+            for page_number, page in enumerate(review_pages):
                 index = page["page_idx"]
                 state["current_page"] = {"stage": stage, "page": index + 1}
                 image = folder / f"page-{index + 1}.png"
@@ -1180,6 +1228,14 @@ class Jobs:
                     )["cells"] += 1
                 for number, chunk in enumerate(chunks):
                     self.checkpoint(job)
+                    progress["progress"] = {
+                        "percent": 100
+                        * (page_number + number / len(chunks))
+                        / len(review_pages),
+                        "estimated": True,
+                        "detail": f"{page_number}/{len(review_pages)} pages · PDF page {index + 1} · task {number + 1}/{len(chunks)}",
+                    }
+                    self.save(job, state)
                     context = {
                         "catalog_id": manifest["catalog_id"],
                         "manufacturer": manifest["manufacturer"],
@@ -1378,6 +1434,12 @@ class Jobs:
                             yaml.safe_dump(mapping, allow_unicode=True, sort_keys=False)
                         )
                     self.save(job, state)
+                progress["progress"] = {
+                    "percent": min(99, 100 * (page_number + 1) / len(review_pages)),
+                    "estimated": True,
+                    "detail": f"{page_number + 1}/{len(review_pages)} pages reviewed",
+                }
+                self.save(job, state)
             if stage == "mapping":
                 mapping = library().save_mapping(config.manufacturer_id, mapping)
                 (folder / "mapping.yaml").write_text(

@@ -463,6 +463,77 @@ main {
   color: var(--cyan);
   white-space: nowrap;
 }
+.stage-mini-progress {
+  grid-column: 1/-1;
+  min-width: 0;
+}
+.stage-card > .stage-mini-progress {
+  margin: -4px 0 22px;
+}
+.stage-mini-caption {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 6px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.stage-mini-detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.stage-mini-value {
+  white-space: nowrap;
+  color: var(--cyan);
+  font-variant-numeric: tabular-nums;
+}
+.stage-mini-track {
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--border);
+}
+.stage-mini-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--cyan);
+  transition: width 0.4s ease;
+}
+.stage-mini-progress.completed .stage-mini-fill {
+  background: var(--green, var(--cyan));
+}
+.stage-mini-progress.failed .stage-mini-fill,
+.stage-mini-progress.interrupted .stage-mini-fill {
+  background: var(--danger);
+}
+.stage-mini-progress.running .stage-mini-track::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 25%;
+  background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+  opacity: 0.3;
+  animation: stage-progress-pulse 2.2s linear infinite;
+}
+@keyframes stage-progress-pulse {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(400%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stage-mini-fill {
+    transition: none;
+  }
+  .stage-mini-progress.running .stage-mini-track::after {
+    animation: none;
+  }
+}
 .review-pending {
   border: 1px solid var(--cyan);
   padding: 16px;
@@ -1172,8 +1243,8 @@ details[open] > summary {
   font-size: 10px;
 }
 .stage-result {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   padding: 8px 0;
   border-bottom: 1px solid var(--border);

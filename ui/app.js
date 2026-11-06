@@ -1682,6 +1682,138 @@ async function loadLibrary() {
         ]),
   );
 }
+function stageProgress(run, stage) {
+  const stopped = [
+    "paused",
+    "pausing",
+    "stopping",
+    "failed",
+    "cancelled",
+    "interrupted",
+  ].includes(run?.status);
+  const status =
+    stage.status === "running" && stopped ? run.status : stage.status;
+  if (status === "completed")
+    return {
+      percent: 100,
+      status,
+      detail: stage.quality_blocked ? "Findings need review" : "Completed",
+    };
+  if (status === "skipped")
+    return { percent: 0, status, detail: "Skipped · no model" };
+  if (Number.isFinite(stage.progress?.percent))
+    return {
+      percent: Math.max(0, Math.min(99, Math.round(stage.progress.percent))),
+      estimated: stage.progress.estimated,
+      detail: stage.progress.detail || status.replaceAll("_", " "),
+      status,
+    };
+  const start = Date.parse(stage.started_at);
+  if (!Number.isFinite(start))
+    return {
+      percent: 0,
+      status,
+      detail: status === "queued" ? "Waiting" : status.replaceAll("_", " "),
+    };
+  const end =
+    status === "running" && !stopped
+      ? Date.now()
+      : Date.parse(
+          stage.completed_at ||
+            run.stoppage?.occurred_at ||
+            run.completed_at ||
+            stage.started_at,
+        );
+  const elapsed = Math.max(0, (end - start) / 1000) || 0;
+  const pages = run.pages?.total || 1;
+  const expected =
+    {
+      catalog: 5,
+      raw: Math.max(15, pages * 0.25),
+      structure: Math.max(25, pages * 0.5),
+      duplicates: 20,
+      validate: Math.max(10, pages * 0.2),
+    }[stage.id] || 60;
+  return {
+    percent: Math.min(95, Math.floor((95 * elapsed) / (elapsed + expected))),
+    estimated: true,
+    status,
+    detail: `${status.replaceAll("_", " ")} · time-based estimate`,
+  };
+}
+function sectionProgress(run, section) {
+  const members = (run?.stages || []).filter(
+    (s) => stageSection[s.id] === section,
+  );
+  const enabled = members.filter((s) => s.status !== "skipped");
+  if (!enabled.length)
+    return {
+      percent: 0,
+      status: members.length ? "skipped" : "queued",
+      detail: members.length ? "Skipped · no model" : "No catalog selected",
+    };
+  const values = enabled.map((s) => ({
+    ...stageProgress(run, s),
+    title: s.title,
+  }));
+  const current =
+    values.find(
+      (s) => !["completed", "queued", "not_run"].includes(s.status),
+    ) ||
+    values.find((s) => s.status !== "completed") ||
+    values.at(-1);
+  return {
+    ...current,
+    detail:
+      values.length > 1 && current.status !== "completed"
+        ? `${current.title} · ${current.detail}`
+        : current.detail,
+    percent: Math.min(
+      values.every((s) => s.status === "completed") ? 100 : 99,
+      Math.round(values.reduce((sum, s) => sum + s.percent, 0) / values.length),
+    ),
+    estimated:
+      values.some((s) => s.estimated) ||
+      (values.length > 1 &&
+        values.some((s) => s.percent > 0) &&
+        current.status !== "completed"),
+  };
+}
+function updateMiniProgress(box, label, value) {
+  if (!box.firstChild) {
+    const caption = node("div", "stage-mini-caption");
+    caption.append(
+      node("span", "stage-mini-detail"),
+      node("strong", "stage-mini-value"),
+    );
+    const track = node("div", "stage-mini-track");
+    track.setAttribute("role", "progressbar");
+    track.setAttribute("aria-valuemin", "0");
+    track.setAttribute("aria-valuemax", "100");
+    track.append(node("span", "stage-mini-fill"));
+    box.append(caption, track);
+  }
+  box.className = `stage-mini-progress ${value.status}`;
+  box.title = value.estimated
+    ? "Approximate progress. Page/task counters are used when available; other operations use elapsed time. 100% appears only after the stage completes."
+    : value.detail;
+  box.querySelector(".stage-mini-detail").textContent = value.detail;
+  const text =
+    value.status === "skipped"
+      ? "—"
+      : `${value.estimated ? "≈" : ""}${value.percent}%`;
+  box.querySelector(".stage-mini-value").textContent = text;
+  const track = box.querySelector(".stage-mini-track");
+  track.setAttribute("aria-label", `${label} progress`);
+  track.setAttribute("aria-valuenow", String(value.percent));
+  track.setAttribute("aria-valuetext", `${text} · ${value.detail}`);
+  box.querySelector(".stage-mini-fill").style.width = value.percent + "%";
+}
+function miniProgress(label, value) {
+  const box = node("div", "stage-mini-progress");
+  updateMiniProgress(box, label, value);
+  return box;
+}
 function renderProgress() {
   renderQueueControls();
   const active = runs.filter((r) => !terminal.has(r.status));
@@ -1716,7 +1848,21 @@ function renderProgress() {
       const done = run.stages.filter((s) =>
         ["completed", "skipped"].includes(s.status),
       ).length;
-      const percentage = Math.round((done / (run.stages.length || 1)) * 100);
+      const percentage = Math.min(
+        run.stages.every((s) => ["completed", "skipped"].includes(s.status))
+          ? 100
+          : 99,
+        Math.round(
+          run.stages.reduce(
+            (sum, stage) =>
+              sum +
+              (stage.status === "skipped"
+                ? 100
+                : stageProgress(run, stage).percent),
+            0,
+          ) / (run.stages.length || 1),
+        ),
+      );
       const stage = run.stages.find((s) =>
         run.stoppage
           ? s.id === run.stoppage.stage
@@ -1851,6 +1997,16 @@ function renderLocation(run) {
   renderStoppage(run);
   for (const [id] of stages) {
     const card = $(id);
+    let mini = card.querySelector(":scope > .stage-mini-progress");
+    if (!mini) {
+      mini = node("div", "stage-mini-progress");
+      card.querySelector(".stage-heading").after(mini);
+    }
+    updateMiniProgress(
+      mini,
+      stages.find((s) => s[0] === id)[1],
+      sectionProgress(run, id),
+    );
     card.classList.toggle("processing", id === processingStage);
     const link = $("navigation").querySelector(`[href="#${id}"]`);
     link.classList.toggle("processing", id === processingStage);
@@ -2008,7 +2164,15 @@ function renderStoppage(run) {
 }
 function renderRun(run) {
   const signature = JSON.stringify(run);
-  if (renderedRun === run.id && renderedSignature === signature) return;
+  if (renderedRun === run.id && renderedSignature === signature) {
+    for (const stage of run.stages) {
+      const box = $("run-results").querySelector(
+        `[data-stage-id="${stage.id}"] .stage-mini-progress`,
+      );
+      if (box) updateMiniProgress(box, stage.title, stageProgress(run, stage));
+    }
+    return;
+  }
   if (renderedRun)
     runPanels.set(
       renderedRun,
@@ -2110,6 +2274,7 @@ function renderRun(run) {
     );
   for (const stage of run.stages) {
     const row = node("div", "stage-result");
+    row.dataset.stageId = stage.id;
     row.append(
       node("span", "", stage.title),
       node(
@@ -2120,6 +2285,7 @@ function renderRun(run) {
           : stage.status.replaceAll("_", " "),
       ),
     );
+    row.append(miniProgress(stage.title, stageProgress(run, stage)));
     container.append(row);
   }
   if (run.error) container.append(node("div", "notice error", run.error));
