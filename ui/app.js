@@ -28,6 +28,7 @@ let localDeletion = null,
   modelDeleteConfirmation = null,
   modelDeletionError = "";
 let pollBusy = false;
+let submittingCatalogs = false;
 const refreshedMappings = new Set();
 const runPanels = new Map();
 const stoppagePanels = new Map();
@@ -794,7 +795,11 @@ function build() {
     "Rebuild structured workbooks",
     "checkbox",
   );
-  if (bootstrap.catalogs.length)
+  if (
+    bootstrap.catalogs.length &&
+    !bootstrap.active_run &&
+    !bootstrap.queued_runs?.length
+  )
     selected.set(
       bootstrap.defaults.source_pdf,
       bootstrap.catalogs.find((c) => c.path === bootstrap.defaults.source_pdf)
@@ -916,10 +921,12 @@ function refresh() {
   const invalidSelection =
     !selected.size || [...selected.values()].some((v) => !v);
   $("run").disabled =
+    submittingCatalogs ||
     invalidSelection ||
     missingModels.length > 0 ||
     (data.extraction_model === "baidu/Unlimited-OCR-cpu" &&
       (!ocrAvailability.installed || ocrAvailability.url !== data.baidu_url));
+  updateRunButtonActivity();
   $("preview").disabled = invalidSelection;
   $("queue-summary").replaceChildren();
   let total = 0;
@@ -2314,7 +2321,20 @@ function controlButton(label, key, path, danger = false) {
   control.disabled = pendingControls.has(key);
   return control;
 }
+function updateRunButtonActivity() {
+  const active = runs.find((run) => run.id === queueState.active_run);
+  const processing =
+    submittingCatalogs ||
+    runs.some((run) =>
+      ["running", "awaiting_review", "pausing", "stopping"].includes(
+        run.status,
+      ),
+    ) ||
+    (!active && queueState.active_run && !queueState.paused);
+  $("run").classList.toggle("is-processing", Boolean(processing));
+}
 function renderQueueControls() {
+  updateRunButtonActivity();
   const paused = queueState.paused;
   const hasWork = Boolean(
     queueState.active_run || queueState.queued_runs.length,
@@ -3313,7 +3333,10 @@ async function init() {
       upload([...event.dataTransfer.files]);
     };
     $("run").onclick = async () => {
+      if (submittingCatalogs) return;
       $("error").hidden = true;
+      submittingCatalogs = true;
+      refresh();
       try {
         const configs = bootstrap.catalogs
           .filter((c) => selected.has(c.path))
@@ -3323,11 +3346,17 @@ async function init() {
           body: JSON.stringify({ catalogs: configs }),
         });
         selectedRun = result.runs[0].id;
+        for (const config of configs) selected.delete(config.source_pdf);
+        renderSources();
+        refresh();
         $("run-announcement").textContent =
           `${result.runs.length} catalogs added to the CPU queue.`;
         await poll();
       } catch (error) {
         showError(error);
+      } finally {
+        submittingCatalogs = false;
+        refresh();
       }
     };
     $("preview").onclick = async () => {

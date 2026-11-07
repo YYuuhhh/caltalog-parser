@@ -428,7 +428,10 @@
           <button id="preview" class="button outline full">
             Preview selection</button
           ><button id="run" class="button primary full" disabled>
-            Run selected catalogs →
+            <span>Run selected catalogs →</span>
+            <svg class="run-button-trace" aria-hidden="true" focusable="false">
+              <rect x="1.5" y="1.5" rx="10" pathLength="100"></rect>
+            </svg>
           </button>
           <div id="run-announcement" role="status"></div>
           <p class="summary-footnote">

@@ -324,6 +324,49 @@ main {
   width: 100%;
   margin-top: 10px;
 }
+#run {
+  position: relative;
+}
+#run.is-processing:disabled {
+  opacity: 1;
+  color: var(--muted);
+  background: var(--surface);
+  border-color: var(--border);
+}
+.run-button-trace {
+  display: none;
+  position: absolute;
+  inset: -4px;
+  width: calc(100% + 8px);
+  height: calc(100% + 8px);
+  overflow: visible;
+  pointer-events: none;
+}
+#run.is-processing .run-button-trace {
+  display: block;
+}
+.run-button-trace rect {
+  width: calc(100% - 3px);
+  height: calc(100% - 3px);
+  fill: none;
+  stroke: var(--cyan);
+  stroke-width: 2.5px;
+  stroke-linecap: round;
+  stroke-dasharray: 18 82;
+  filter: drop-shadow(0 0 3px var(--cyan));
+  animation: run-button-snake 2.4s linear infinite;
+}
+@keyframes run-button-snake {
+  to {
+    stroke-dashoffset: -100;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .run-button-trace rect {
+    animation: none;
+    stroke-dasharray: none;
+  }
+}
 .catalog-progress {
   margin: 0 0 14px;
   padding: 0;
