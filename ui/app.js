@@ -693,7 +693,7 @@ function build() {
   $("model-catalog-info").textContent = bootstrap.models.note;
   add("local-fields", "local_ram_gb", "Inference machine RAM", "select", [
     ["32", "32 GB · 8B / 9B vision"],
-    ["128", "128 GB · 32B vision"],
+    ["128", "128 GB · 8B review / 32B validation · Q4"],
     ["750", "750 GB · 235B vision"],
   ]);
   add("local-fields", "local_url", "Local Ollama server", "url");
@@ -1091,7 +1091,10 @@ function localModelChoices() {
       choices.set(id, {
         id,
         label: id,
-        weights_gb: preset.weights_gb,
+        weights_gb:
+          id === preset.model
+            ? (preset.model_weights_gb ?? preset.weights_gb)
+            : preset.weights_gb,
         reasoning_levels: id.includes("instruct")
           ? ["none"]
           : ["none", "medium"],
@@ -1983,19 +1986,24 @@ function renderPerformance(run) {
         `${activeStage.title} · ${Math.max(0, Math.round((activeStage.completed_at || run.completed_at ? Date.parse(activeStage.completed_at || run.completed_at) : Date.now()) / 1000 - Date.parse(activeStage.started_at) / 1000))}s wall time`,
       ),
     );
-  if (p?.hardware)
+  if (p?.hardware) {
+    const cores =
+      p.hardware.physical_cores == null
+        ? `${p.hardware.logical_cpus} logical CPUs · physical topology unknown`
+        : `${p.hardware.physical_cores} ${p.hardware.virtualized ? "guest" : "OS-reported"} cores`;
     box.append(
       node(
         "p",
         "help",
-        `${p.hardware.cpu} · ${formatGiB(p.hardware.memory_bytes)} usable RAM · ${p.hardware.physical_cores} physical cores · model threads ${run.config?.local_cpu_threads ?? "auto"}`,
+        `${p.hardware.cpu} · ${formatGiB(p.hardware.memory_bytes)} usable RAM · ${cores} · model threads ${run.config?.local_cpu_threads || "auto"}`,
       ),
     );
+  }
   if (g?.model) {
     const rate =
       g.tokens_per_second == null
         ? "Waiting for first token / processing prompt"
-        : `${g.tokens_estimated ? "≈ " : ""}${g.tokens_per_second} ${g.tokens_estimated ? "token chunks/s (estimate)" : "tokens/s (measured)"}`;
+        : `${g.tokens_estimated ? "≈ " : ""}${g.tokens_per_second} ${g.tokens_estimated ? "stream fragments/s (estimate)" : "tokens/s (measured)"}`;
     box.append(
       node(
         "p",
@@ -2015,9 +2023,30 @@ function renderPerformance(run) {
       node(
         "p",
         "help",
-        `${g.tokens ?? g.chunks ?? 0} ${g.tokens_estimated ? "chunks" : "tokens"} · first token ${g.first_token_seconds ?? "—"}s · prompt ${g.prompt_tokens_per_second ?? "—"} tokens/s`,
+        `${g.tokens ?? g.chunks ?? 0} ${g.tokens_estimated ? "streamed text fragments" : "tokens"} · first token ${g.first_token_seconds ?? "—"}s · prompt ${g.prompt_tokens_per_second ?? "—"} tokens/s`,
       ),
     );
+    if (g.thinking_chars != null)
+      box.append(
+        node(
+          "p",
+          "help",
+          `Thinking: ${g.thinking_chunks} fragments / ${g.thinking_chars} characters · answer: ${g.answer_chunks} fragments / ${g.answer_chars} characters. Stream fragments are not catalog review tasks.`,
+        ),
+      );
+    if (
+      /bf16|fp16|f16/i.test(g.model) &&
+      g.tokens_per_second != null &&
+      g.tokens_per_second < 1 &&
+      g.elapsed_seconds > 120
+    )
+      box.append(
+        node(
+          "p",
+          "help",
+          "Slow generation with full-precision CPU weights. The 128 GB CPU preset uses Q4 8B page review and Q4 32B final validation. Saved runs retain their selected models; install the quantized models and choose them for a new run.",
+        ),
+      );
   }
   box.append(
     node(

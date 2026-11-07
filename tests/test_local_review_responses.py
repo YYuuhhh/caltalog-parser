@@ -117,18 +117,26 @@ def ollama(tmp_path):
                 response["message"]["content"] = text[:80]
             elif style == "wrong_model":
                 response["model"] = "another-model"
-            if style in ("stream", "broken_stream"):
+            if style in ("stream", "thinking_stream", "broken_stream"):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-ndjson")
                 self.end_headers()
-                for part in [text[: len(text) // 2], text[len(text) // 2 :]]:
+                parts = (
+                    [("thinking", "Fixture reasoning."), ("content", text)]
+                    if style == "thinking_stream"
+                    else [
+                        ("content", text[: len(text) // 2]),
+                        ("content", text[len(text) // 2 :]),
+                    ]
+                )
+                for channel, part in parts:
                     self.wfile.write(
                         (
                             json.dumps(
                                 {
                                     "model": model,
                                     "done": False,
-                                    "message": {"content": part},
+                                    "message": {channel: part},
                                 }
                             )
                             + "\n"
@@ -136,7 +144,7 @@ def ollama(tmp_path):
                     )
                     self.wfile.flush()
                     time.sleep(0.02)
-                if style == "stream":
+                if style in ("stream", "thinking_stream"):
                     response["message"] = {"content": ""}
                     response.update(
                         eval_count=20,
@@ -264,15 +272,25 @@ def test_qwen_channel_compatibility_preserves_evidence_gates(ollama):
     assert result["findings"][0]["code"] == "LOCAL_UNGROUNDED_REVIEW"
 
 
-def test_streamed_response_retains_exact_usage_and_partial_evidence(ollama):
+@pytest.mark.parametrize("style", ["stream", "thinking_stream"])
+def test_streamed_response_retains_exact_usage_and_partial_evidence(ollama, style):
     state, task = ollama
-    state["style"] = "stream"
-    folder = task()
+    state["style"] = style
+    folder = task("medium" if style == "thinking_stream" else "none")
     assert local.execute(folder)["status"] == "passed"
     progress = json.loads((folder / "generation.json").read_text())
     assert progress["tokens"] == 20 and progress["tokens_per_second"] == 10
     assert progress["prompt_tokens_per_second"] == 4167
     assert progress["tokens_estimated"] is False
+    assert progress["thinking_chunks"] == (1 if style == "thinking_stream" else 0)
+    assert progress["thinking_chars"] == (
+        len("Fixture reasoning.") if style == "thinking_stream" else 0
+    )
+    assert (
+        progress["answer_chunks"] == (1 if style == "thinking_stream" else 2)
+        and progress["answer_chars"] > 0
+    )
+    assert state["received"][0]["think"] == (style == "thinking_stream")
     assert state["received"][0]["stream"] is True
     assert len((folder / "ollama-stream.jsonl").read_text().splitlines()) == 3
     state["style"] = "broken_stream"

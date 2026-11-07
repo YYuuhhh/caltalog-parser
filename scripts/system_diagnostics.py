@@ -35,7 +35,11 @@ def counters(path):
         return {}
 
 
-def hardware(proc=Path("/proc"), cgroup=Path("/sys/fs/cgroup")):
+def hardware(
+    proc=Path("/proc"),
+    cgroup=Path("/sys/fs/cgroup"),
+    cpu_root=Path("/sys/devices/system/cpu"),
+):
     memory = counters(proc / "meminfo")
     total = memory.get("MemTotal", 0) * 1024
     limit = None
@@ -47,30 +51,60 @@ def hardware(proc=Path("/proc"), cgroup=Path("/sys/fs/cgroup")):
     if limit and total:
         total = min(total, limit)
     cpu = "Unknown CPU"
+    cpuinfo = []
     try:
-        lines = (proc / "cpuinfo").read_text().splitlines()
-        cpu = next(
-            s.partition(":")[2].strip() for s in lines if s.startswith("model name")
-        )
+        cpuinfo = [
+            dict(line.split(":", 1) for line in block.splitlines() if ":" in line)
+            for block in (proc / "cpuinfo").read_text().split("\n\n")
+            if block.strip()
+        ]
+        cpuinfo = [
+            {key.strip(): value.strip() for key, value in block.items()}
+            for block in cpuinfo
+        ]
+        cpu = next(block["model name"] for block in cpuinfo if "model name" in block)
     except (OSError, StopIteration):
         pass
-    logical = (
-        len(os.sched_getaffinity(0))
+    affinity = (
+        set(os.sched_getaffinity(0))
         if hasattr(os, "sched_getaffinity")
-        else os.cpu_count() or 1
+        else set(range(os.cpu_count() or 1))
     )
+    logical = len(affinity)
     physical = set()
-    try:
-        for cpu_id in os.sched_getaffinity(0):
-            root = Path(f"/sys/devices/system/cpu/cpu{cpu_id}/topology")
+    observed = set()
+    topology_source = "sysfs"
+    for cpu_id in affinity:
+        try:
+            root = cpu_root / f"cpu{cpu_id}/topology"
             physical.add(
                 (
                     (root / "physical_package_id").read_text(),
                     (root / "core_id").read_text(),
                 )
             )
-    except (OSError, AttributeError):
-        pass
+            observed.add(cpu_id)
+        except OSError:
+            pass
+    if observed != affinity:
+        physical = set()
+        observed = set()
+        topology_source = "cpuinfo"
+        for block in cpuinfo:
+            if (
+                block.get("processor", "").isdigit()
+                and int(block["processor"]) in affinity
+                and "physical id" in block
+                and "core id" in block
+            ):
+                physical.add((block["physical id"], block["core id"]))
+                observed.add(int(block["processor"]))
+    if observed != affinity:
+        physical = set()
+        topology_source = "unknown"
+    virtualized = any(
+        "hypervisor" in block.get("flags", "").split() for block in cpuinfo
+    )
     budget = float(logical)
     try:
         quota, period = (cgroup / "cpu.max").read_text().split()
@@ -82,7 +116,9 @@ def hardware(proc=Path("/proc"), cgroup=Path("/sys/fs/cgroup")):
         "cpu": cpu,
         "logical_cpus": logical,
         "cpu_budget": budget,
-        "physical_cores": len(physical) or logical,
+        "physical_cores": len(physical) or None,
+        "cpu_topology_source": topology_source,
+        "virtualized": virtualized,
         "memory_bytes": total,
         "host_memory_bytes": memory.get("MemTotal", 0) * 1024,
         "memory_limit_bytes": limit,
@@ -340,24 +376,13 @@ class Monitor:
 def defaults(system, installed=()):
     gib = system["memory_bytes"] / 1024**3
     tier = 750 if gib >= 600 else 128 if gib >= 96 else 32
-    preferred = "qwen3-vl:32b-thinking-bf16" if tier == 128 else "qwen3.5:9b"
-    candidates = [
-        m
-        for m in installed
-        if "medium" in m.get("reasoning_levels", [])
-        and m.get("weights_gb", 0) < gib * 0.7
-    ]
-    if any(m["id"] == preferred for m in candidates):
-        selected = preferred
-    else:
-        selected = (
-            max(candidates, key=lambda m: m.get("weights_gb", 0))["id"]
-            if candidates
-            else preferred
-        )
+    # RAM capacity is not a throughput benchmark. Keep CPU presets quantized;
+    # installed BF16 weights never override them just because they fit.
+    selected = "qwen3-vl:8b-thinking-q4_K_M" if tier == 128 else "qwen3.5:9b"
+    final = "qwen3-vl:32b-thinking-q4_K_M" if tier == 128 else selected
     return {
         "model": selected,
-        "final_model": selected,
+        "final_model": final,
         "reasoning": "medium",
         "final_reasoning": "medium",
         "local_ram_gb": tier,
@@ -369,5 +394,7 @@ def defaults(system, installed=()):
         "review_batch_rows": 20,
         "local_cpu_threads": max(
             1, min(system["physical_cores"], int(system["cpu_budget"]))
-        ),
+        )
+        if system.get("physical_cores") and not system.get("virtualized")
+        else 0,
     }

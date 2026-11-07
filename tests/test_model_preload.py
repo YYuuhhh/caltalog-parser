@@ -98,8 +98,10 @@ def wait_for(predicate):
     raise AssertionError("Preload did not reach expected state")
 
 
-def test_preload_runs_concurrently_deduplicates_and_reports_ready(loader):
+@pytest.mark.parametrize("threads", [0, 2])
+def test_preload_runs_concurrently_deduplicates_and_reports_ready(loader, threads):
     jobs, job, settings, server, release = loader
+    settings = settings.model_copy(update={"local_cpu_threads": threads})
     start = time.monotonic()
     jobs.start_model_load(job, settings, MODEL)
     assert time.monotonic() - start < 1
@@ -112,12 +114,14 @@ def test_preload_runs_concurrently_deduplicates_and_reports_ready(loader):
     with pytest.raises(RuntimeError, match="one model"):
         jobs.start_model_load(job, settings, "qwen3.5:9b")
     assert len(server["calls"]) == 1
-    assert server["calls"][0]["options"] == {
+    expected = {
         "num_ctx": settings.local_context_tokens,
         "num_gpu": 0,
-        "num_thread": settings.local_cpu_threads,
         "use_mmap": False,
     }
+    if threads:
+        expected["num_thread"] = threads
+    assert server["calls"][0]["options"] == expected
     assert server["calls"][0]["keep_alive"] == -1
     release.set()
     jobs.wait_model_load(job, MODEL)

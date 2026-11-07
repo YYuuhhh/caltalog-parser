@@ -58,15 +58,17 @@ library is usable; storage permission errors are returned as readable API errors
 
 ### Local CPU review and final validation
 
-New catalogs default to **local vision models for both stage 03 and stage 06**, with temperature **0** and thinking **On**. The server detects its usable RAM, CPU affinity/quota and physical core budget when the app starts. A 117 GiB server selects the 128 GB profile and existing Qwen3-VL 32B Thinking BF16 model for both checks; smaller machines start with Qwen3.5 9B. New defaults use 20 RAW cells per task, 144 DPI, a 7200-second response budget and 24576 context tokens for the 128 GB profile (16384 on smaller machines). Saved settings and runs retain their explicit choices. All local requests force `num_gpu=0`; the local container has no GPU device allocation. Each task has a fresh page/tool context, the original PDF image, a fixed JSON schema and saved model execution evidence. There is no fallback to ChatGPT Work, the Platform API or Ollama cloud. Earlier saved Work runs keep their explicit choices.
+New catalogs default to **local vision models for both stage 03 and stage 06**, with temperature **0** and thinking **On**. A 117 GiB server selects the 128 GB CPU profile: Qwen3-VL 8B Thinking Q4 for page reviews and Qwen3-VL 32B Thinking Q4 for final validation. RAM capacity alone no longer promotes an installed BF16 model. Smaller machines start with Qwen3.5 9B. New defaults use 20 RAW cells per task, 144 DPI, a 7200-second response budget and 24576 context tokens for the 128 GB profile (16384 on smaller machines). Native CPU threads follow measured affinity/quota and complete OS topology; virtual or unknown topology uses runtime automatic threads (`0`) rather than treating vCPUs as physical cores. Saved settings and runs retain their explicit choices. All local requests force `num_gpu=0`; the local container has no GPU device allocation. Each task has a fresh page/tool context, the original PDF image, a fixed JSON schema and saved model execution evidence. There is no fallback to ChatGPT Work, the Platform API or Ollama cloud. Earlier saved Work runs keep their explicit choices.
 
 | Inference RAM | Evidence review | Final validation | Approximate model weights |
 | --- | --- | --- | --- |
 | 32 GB | Qwen3-VL 8B Instruct Q4 | Qwen3.5 9B Q4 | 6.1 GB / 6.6 GB |
-| 128 GB (optional) | Qwen3-VL 32B BF16 | Same model, fresh validation task | 67 GB |
+| 128 GB | Qwen3-VL 8B Thinking Q4_K_M | Qwen3-VL 32B Thinking Q4_K_M | 6.2 GB / 20.9 GB |
 | 750 GB | Qwen3-VL 235B-A22B Instruct BF16 | Same model, fresh validation task | 471 GB |
 
 Only one model and one request are loaded at a time. Weight sizes are from the [Ollama Qwen3.5 library](https://ollama.com/library/qwen3.5:9b) and [Qwen3-VL library](https://ollama.com/library/qwen3-vl/tags); these presets leave room for context, images, the extractor and the OS, but are not a speed guarantee. RAM means system memory, not GPU VRAM. CPU bandwidth and core count affect runtime. The current machine must actually expose enough RAM to Linux/WSL to load the chosen model.
+
+The quantized pair is available through the [8B Thinking Q4](https://ollama.com/library/qwen3-vl:8b-thinking-q4_K_M) and [32B Thinking Q4](https://ollama.com/library/qwen3-vl:32b-thinking-q4_K_M) model entries. Install explicitly from the dropdown menus. These revised presets have not been benchmarked on the target server; compare accuracy against the PDF when changing model size or precision. A saved BF16 run keeps its model and thread settings. To change them, stop it, reuse its settings, select the quantized models and start a new run.
 
 ```bash
 make local-models                   # Download both 32 GB models; no generation

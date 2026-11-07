@@ -126,20 +126,27 @@ task, with thinking Off and Qwen3-VL; incomplete or unrelated answers remain fai
 ## System defaults, diagnostics and library
 
 New runs use hardware-selected CPU defaults. The reported 117 GiB server selects
-the 128 GB profile with Qwen3-VL 32B Thinking BF16, temperature 0, thinking on,
+the 128 GB profile with Qwen3-VL 8B Thinking Q4 for page review and 32B Thinking
+Q4 for final validation, temperature 0, thinking on,
 20 RAW cells per review task, 144 DPI, 24576 context tokens and a 7200-second
-response budget. CPU threads follow affinity/quota and physical-core detection.
+response budget. CPU threads follow affinity/quota and complete OS topology.
+Virtual or unknown topology uses runtime automatic threads (`0`); guest vCPUs
+are not advertised as verified physical cores. Install the quantized pair
+explicitly through the model menus. Existing BF16 weights remain selectable.
 Existing saved runs keep their parameters; use a new run or Reuse settings to
 change them. The app does not change system swap configuration.
 
 The stage performance dropdown records CPU/RAM peaks, active swap I/O, I/O wait,
-first-token latency and model token rates. Stream chunk rates are estimates;
+first-token latency and model token rates. Stream fragment rates are estimates;
 completed response rates use actual Ollama counters. Counters describe the host,
 not exclusively the model. The read-only `inference-monitor` container shares
 Ollama's PID namespace to report actual RSS/peak RSS, VmSwap, CPU core use and
 major faults; it uses no Docker socket or host PID access. Host swap traffic and
 file-backed paging remain separate measurements. A memory-bandwidth bottleneck cannot be confirmed
 from these counters alone. Samples remain in `logs/ui-runs/<run-id>/performance.*`.
+Each new response also counts thinking and answer fragments/characters separately,
+without displaying the reasoning text. These fragments are not catalog review
+tasks. Prompt throughput is supplied by Ollama when the response completes.
 
 To add the monitor to an existing running stack while retaining Ollama:
 

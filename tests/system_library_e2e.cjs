@@ -46,6 +46,13 @@ const base = process.env.PIPELINE_UI_URL || "http://127.0.0.1:17861";
       status: i < 3 ? "completed" : i === 3 ? "running" : "queued",
     })),
     performance: {
+      hardware: {
+        cpu: "Fixture guest CPU",
+        logical_cpus: 50,
+        physical_cores: 50,
+        virtualized: true,
+        memory_bytes: 117 * 1024 ** 3,
+      },
       current: {
         cpu_percent: 93,
         memory_available_bytes: 40 * 1024 ** 3,
@@ -71,6 +78,10 @@ const base = process.env.PIPELINE_UI_URL || "http://127.0.0.1:17861";
       tokens_estimated: false,
       prompt_tokens_per_second: 12,
       first_token_seconds: 45,
+      thinking_chunks: 10,
+      thinking_chars: 100,
+      answer_chunks: 5,
+      answer_chars: 50,
     },
   };
   let installed = false,
@@ -170,6 +181,14 @@ const base = process.env.PIPELINE_UI_URL || "http://127.0.0.1:17861";
     assert.match(
       await page.locator("#performance-status").textContent(),
       /sampled peak 64.0 GiB · swapped 2.0 GiB/,
+    );
+    assert.match(
+      await page.locator("#performance-status").textContent(),
+      /50 guest cores/,
+    );
+    assert.match(
+      await page.locator("#performance-status").textContent(),
+      /Thinking: 10 fragments \/ 100 characters · answer: 5 fragments \/ 50 characters/,
     );
     await page.locator("#performance-status summary").click();
     run.performance.current.cpu_percent = 84;

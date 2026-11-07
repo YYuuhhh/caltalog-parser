@@ -38,17 +38,46 @@ def test_missing_counters_are_unknown_not_false_zero_utilization(tmp_path):
     assert metrics.bottlenecks(value)[0]["kind"] == "undetermined"
 
 
-def test_server_defaults_use_117_gib_ram_thinking_zero_temperature_and_physical_cores():
+def test_server_defaults_use_quantized_review_pair_and_keep_reasoning_on():
     system = {"memory_bytes": 117 * 1024**3, "physical_cores": 24, "cpu_budget": 48}
     config = metrics.defaults(system)
     assert config["local_ram_gb"] == 128
-    assert config["model"] == config["final_model"] == "qwen3-vl:32b-thinking-bf16"
+    assert config["model"] == "qwen3-vl:8b-thinking-q4_K_M"
+    assert config["final_model"] == "qwen3-vl:32b-thinking-q4_K_M"
     assert config["local_cpu_threads"] == 24
     assert config["local_temperature"] == 0
     assert config["reasoning"] == config["final_reasoning"] == "medium"
     small = metrics.defaults({**system, "memory_bytes": 32 * 1024**3, "cpu_budget": 4})
     assert small["local_ram_gb"] == 32 and small["local_cpu_threads"] == 4
     assert small["model"] == "qwen3.5:9b"
+    installed = [
+        {
+            "id": "qwen3-vl:32b-thinking-bf16",
+            "weights_gb": 66.7,
+            "reasoning_levels": ["medium"],
+        }
+    ]
+    assert metrics.defaults(system, installed)["model"] == config["model"]
+    assert (
+        metrics.defaults({**system, "physical_cores": None})["local_cpu_threads"] == 0
+    )
+    assert metrics.defaults({**system, "virtualized": True})["local_cpu_threads"] == 0
+
+
+def test_cpuinfo_fallback_distinguishes_smt_from_physical_cores(tmp_path, monkeypatch):
+    monkeypatch.setattr(metrics.os, "sched_getaffinity", lambda _: {0, 1, 2, 3})
+    (tmp_path / "cpuinfo").write_text(
+        "\n\n".join(
+            f"processor : {i}\nmodel name : Test CPU\nphysical id : 0\ncore id : {i // 2}\nflags : avx2 hypervisor"
+            for i in range(4)
+        )
+    )
+    value = metrics.hardware(tmp_path, tmp_path / "cgroup", tmp_path / "sysfs")
+    assert value["logical_cpus"] == 4 and value["physical_cores"] == 2
+    assert value["virtualized"] and value["cpu_topology_source"] == "cpuinfo"
+    (tmp_path / "cpuinfo").write_text("processor : 0\nmodel name : Unknown topology\n")
+    value = metrics.hardware(tmp_path, tmp_path / "cgroup", tmp_path / "sysfs")
+    assert value["physical_cores"] is None and value["cpu_topology_source"] == "unknown"
 
 
 def test_monitor_retains_peaks_stage_samples_and_stops_cleanly(tmp_path):

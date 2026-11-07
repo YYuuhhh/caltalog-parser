@@ -31,9 +31,11 @@ PRESETS = [
     },
     {
         "ram_gb": 128,
-        "model": "qwen3-vl:32b-thinking-bf16",
-        "label": "Qwen3-VL 32B · BF16",
-        "weights_gb": 67,
+        "model": "qwen3-vl:8b-thinking-q4_K_M",
+        "final_model": "qwen3-vl:32b-thinking-q4_K_M",
+        "label": "Qwen3-VL 8B / 32B Thinking · Q4 · CPU",
+        "weights_gb": 20.9,
+        "model_weights_gb": 6.2,
     },
     {
         "ram_gb": 750,
@@ -288,6 +290,10 @@ def stream_answer(client, url, payload, folder, timeout):
         "tokens_estimated": True,
         "chunks": 0,
         "tokens_per_second": None,
+        "thinking_chunks": 0,
+        "answer_chunks": 0,
+        "thinking_chars": 0,
+        "answer_chars": 0,
     }
     target = folder / "generation.json"
     diagnostics.atomic(target, state)
@@ -360,6 +366,9 @@ def stream_answer(client, url, payload, folder, timeout):
                             f"Ollama stream returned invalid message.{key}."
                         )
                     buffer.append(value)
+                    channel = "answer" if key == "content" else "thinking"
+                    state[channel + "_chunks"] += bool(value)
+                    state[channel + "_chars"] += len(value)
                 if message.get("content") or message.get("thinking"):
                     count += 1
                     first = first or time.monotonic()

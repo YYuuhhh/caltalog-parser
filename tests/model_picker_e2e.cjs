@@ -8,7 +8,7 @@ const root = path.resolve(__dirname, "..");
 const base = process.env.PIPELINE_UI_URL || "http://127.0.0.1:17861";
 const REVIEW = "qwen3-vl:8b-instruct",
   FINAL = "qwen3.5:9b",
-  LARGE = "qwen3-vl:32b-thinking-bf16";
+  LARGE = "qwen3-vl:32b-thinking-q4_K_M";
 
 (async () => {
   const installed = new Set([REVIEW]);
