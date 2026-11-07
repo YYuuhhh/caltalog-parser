@@ -918,6 +918,31 @@ def test_review_stages_dispatch_independent_models_and_reasoning(
     }
     seen = []
     seen_progress = []
+    source_commands = []
+
+    def prepare_sources(job_id, stage, index, args):
+        assert "manufacturer_sources.py" in " ".join(args)
+        source_commands.append(stage)
+        ui.official.prepare(
+            settings.source_pdf,
+            "promatool",
+            "PROMATOOL",
+            folder / "official-sources.json",
+        )
+
+    monkeypatch.setattr(ui.jobs, "command", prepare_sources)
+    monkeypatch.setattr(
+        ui.official,
+        "fetch",
+        lambda url, origins: {
+            "url": url,
+            "text": "PROMATOOL D-001 d1 1,25 mm coating TiAlN",
+            "content_sha256": hashlib.sha256(b"official").hexdigest(),
+            "content_type": "text/html",
+            "body": b"official",
+            "links": [],
+        },
+    )
 
     def simulated_result(queue, request, cancelled, timeout, checkpoint=None):
         seen.append(request)
@@ -938,6 +963,9 @@ def test_review_stages_dispatch_independent_models_and_reasoning(
     for stage in ["correctness", "completeness", "internet", "mapping", "final"]:
         assert not ui.jobs.review_stage(job, stage, settings, state, fixture_root)
     assert len(seen) == 10
+    assert source_commands == ["correctness"]
+    assert len({r["context"]["official_sources"]["snapshot_sha256"] for r in seen}) == 1
+    assert 'web_search="disabled"' in sw.command("codex", folder, seen[-1])
     for stage in state["stages"]:
         assert [percent for name, percent in seen_progress if name == stage["id"]] == [
             0,

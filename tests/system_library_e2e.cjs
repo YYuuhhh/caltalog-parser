@@ -23,6 +23,11 @@ const base = process.env.PIPELINE_UI_URL || "http://127.0.0.1:17861";
     config: boot.defaults,
     review_tasks: [],
     files: [],
+    official_sources: {
+      status: "ready",
+      official_urls: ["https://guehring.com/de-en/"],
+      snapshot_sha256: "e".repeat(64),
+    },
     stages: [
       "catalog",
       "parse",
@@ -174,10 +179,23 @@ const base = process.env.PIPELINE_UI_URL || "http://127.0.0.1:17861";
       null,
     );
     await page.locator("#sidebar-library").click();
-    await page.locator("#library-catalogs .catalog-state.loaded").waitFor();
-    assert.match(
-      await page.locator("#library-catalogs").textContent(),
-      /Loaded · not parsed/,
+    const loaded = page.locator("#library-catalogs tr.catalog-row.loaded");
+    await loaded.waitFor();
+    assert.match(await loaded.getAttribute("title"), /Loaded, not parsed/);
+    assert.notEqual(
+      await loaded.evaluate((el) => getComputedStyle(el).backgroundColor),
+      "rgba(0, 0, 0, 0)",
+    );
+    assert.equal(
+      await page.locator("#library-catalogs .catalog-state").count(),
+      0,
+    );
+    assert.equal(
+      await page
+        .locator("#library-catalogs th")
+        .filter({ hasText: /^Status$/ })
+        .count(),
+      0,
     );
     assert.match(
       await page.locator("#library-catalogs").textContent(),
@@ -194,6 +212,7 @@ const base = process.env.PIPELINE_UI_URL || "http://127.0.0.1:17861";
       fullPage: true,
     });
     await page.locator("#show-pipeline").click();
+    await page.locator(".ocr-runtime-setup summary").click();
     await page
       .getByRole("button", { name: "Check CPU OCR service", exact: true })
       .click();
@@ -202,11 +221,28 @@ const base = process.env.PIPELINE_UI_URL || "http://127.0.0.1:17861";
     );
     assert.equal(await page.locator("#ocr-install").isEnabled(), true);
     await page.locator("#ocr-install").click();
-    await page.getByText("Pinned CPU model ready.", { exact: false }).waitFor();
+    await page
+      .getByText("CPU extraction model ready.", { exact: false })
+      .waitFor();
     assert.equal(installs, 1);
     await page
-      .locator("select[name=ocr_check_model]")
+      .locator("select[name=extraction_model]")
       .selectOption("baidu/Unlimited-OCR-cpu");
+    assert.equal(
+      await page.locator("#extract select[name=extraction_model]").count(),
+      1,
+    );
+    assert.equal(await page.locator("select[name=ocr_check_model]").count(), 0);
+    assert.equal(await page.locator("#baidu-fields").isVisible(), true);
+    assert.equal(await page.locator("select[name=method]").isDisabled(), true);
+    assert.match(
+      await page.locator("#official-source-status").textContent(),
+      /fixed for this run/,
+    );
+    assert.equal(
+      await page.locator("#official-source-status a").getAttribute("href"),
+      "https://guehring.com/de-en/",
+    );
     await page.locator("#performance-status summary").click();
     await page.screenshot({
       path: "logs/system-library-test/browser/performance.png",

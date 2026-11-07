@@ -186,12 +186,12 @@ const parameterHelp = {
     "Sampling temperature for local reviews. Lower values make repeated checks more consistent.",
   local_cpu_threads:
     "CPU threads per model request. The default uses the detected physical core budget. Zero lets Ollama choose. More threads can reduce speed when memory bandwidth is the limit.",
-  ocr_check_model:
-    "Optional independent CPU OCR transcription for each page, supplied as evidence to the review models. Baidu Unlimited-OCR is an experimental CPU port and does not perform semantic or internet validation. It requires its optional container and installed weights.",
-  ocr_check_url:
-    "Private address of the optional CPU OCR service. The default matches the baidu-ocr Compose profile. No cloud fallback is used.",
-  ocr_check_tokens:
-    "Maximum new tokens for each independent OCR page. A truncated transcript blocks this check; increase this limit if necessary.",
+  baidu_url:
+    "Private address of the CPU Unlimited-OCR extraction service. Starting it does not download weights; use Install after checking availability.",
+  baidu_output_tokens:
+    "Maximum new OCR tokens for each PDF page. A truncated page fails extraction and must be retried with a larger budget.",
+  extraction_dpi:
+    "Resolution used to render pages for Unlimited-OCR. Automatic quality retries increase this resolution up to 300 DPI and retain the stronger complete extraction.",
   local_keep_loaded:
     "Keep weights resident until Ollama restarts, unloads them, or switches models. Task evidence remains fresh. Turn off to unload after every response and disable early preloading.",
   local_preload:
@@ -201,7 +201,7 @@ const parameterHelp = {
   local_load_into_ram:
     "Read CPU model weights fully into RAM instead of relying on memory-mapped disk pages. Helps HDD inference when the model, context and extractor fit available RAM. Turn off to use memory mapping. The operating system can still swap under memory pressure.",
   local_source_urls:
-    "Space-separated HTTPS manufacturer product or catalog pages to retrieve as internet evidence. Only fetched sources can support a passed internet check.",
+    "Optional additional pages on the manufacturer's approved domains. The official origin is resolved automatically before reviewing and the chosen evidence is frozen for the run.",
   local_search_url:
     "Optional private SearXNG server base URL for finding manufacturer pages. Without fetched sources, internet-dependent checks remain unverified.",
   reasoning:
@@ -404,6 +404,8 @@ function settings() {
 function applySettings(data) {
   const previousServer = localServerUrl();
   data = { ...data };
+  data.baidu_url ??= data.ocr_check_url;
+  data.baidu_output_tokens ??= data.ocr_check_tokens;
   if (data.model === "chatgpt") data.model = bootstrap.defaults.model;
   if (data.final_model === "chatgpt")
     data.final_model = bootstrap.defaults.final_model;
@@ -522,9 +524,61 @@ function build() {
     "extraction_model",
     "CPU extraction model",
     "select",
-    [["mineru-3.4.5-pipeline", "MinerU 3.4.5 · CPU model bundle"]],
+    [
+      ["mineru-3.4.5-pipeline", "MinerU 3.4.5 · CPU model bundle"],
+      ["baidu/Unlimited-OCR-cpu", "○ Baidu Unlimited-OCR · experimental CPU"],
+    ],
     "The installed CPU bundle. No GPU parser is required.",
   );
+  add(
+    "baidu-fields",
+    "baidu_output_tokens",
+    "Maximum OCR output tokens",
+    "number",
+  );
+  add("baidu-fields", "extraction_dpi", "Page rendering DPI", "number");
+  inputs
+    .get("extraction_model")
+    .querySelector('option[value="baidu/Unlimited-OCR-cpu"]').disabled = true;
+  const ocrActions = node("div", "ocr-model-actions");
+  const ocrCheck = button("Check CPU OCR service", () =>
+    checkOCR().catch(showError),
+  );
+  const ocrInstall = button("Install Baidu weights", async () => {
+    try {
+      ocrInstall.disabled = true;
+      await api("/api/ocr/baidu/install", {
+        method: "POST",
+        body: JSON.stringify({ url: inputs.get("baidu_url").value }),
+      });
+      await checkOCR();
+    } catch (error) {
+      showError(error);
+      ocrInstall.disabled = false;
+    }
+  });
+  ocrInstall.id = "ocr-install";
+  ocrInstall.disabled = true;
+  const ocrStatus = node(
+    "small",
+    "help",
+    "Optional container: baidu-ocr. Check service availability before installation.",
+  );
+  ocrStatus.id = "ocr-status";
+  ocrActions.append(ocrCheck, ocrInstall, ocrStatus);
+  const ocrSetup = node("details", "ocr-runtime-setup");
+  const ocrRuntime = node("div", "field-grid");
+  buildField(ocrRuntime, "baidu_url", "Baidu CPU service", "url");
+  inputs.get("baidu_url").addEventListener("input", () => {
+    ocrAvailability = { url: "", installed: false };
+    refresh();
+  });
+  ocrSetup.append(
+    node("summary", "", "Optional Baidu CPU runtime"),
+    ocrRuntime,
+    ocrActions,
+  );
+  $("extract-fields").append(ocrSetup);
   add("extract-fields", "method", "Initial extraction method", "select", [
     ["auto", "Automatic"],
     ["txt", "Native PDF text"],
@@ -592,52 +646,6 @@ function build() {
   buildReasoningField("review-fields", "reasoning", "Stage 03 reasoning");
   add(
     "review-fields",
-    "ocr_check_model",
-    "Independent OCR checking model",
-    "select",
-    [
-      ["none", "No additional OCR model"],
-      ["baidu/Unlimited-OCR-cpu", "○ Baidu Unlimited-OCR · experimental CPU"],
-    ],
-  );
-  add("review-fields", "ocr_check_url", "CPU OCR server", "url");
-  inputs
-    .get("ocr_check_model")
-    .querySelector('option[value="baidu/Unlimited-OCR-cpu"]').disabled = true;
-  inputs.get("ocr_check_url").addEventListener("input", () => {
-    ocrAvailability = { url: "", installed: false };
-    refresh();
-  });
-  add("review-fields", "ocr_check_tokens", "OCR check output tokens", "number");
-  const ocrActions = node("div", "ocr-model-actions");
-  const ocrCheck = button("Check CPU OCR service", () =>
-    checkOCR().catch(showError),
-  );
-  const ocrInstall = button("Install Baidu weights", async () => {
-    try {
-      ocrInstall.disabled = true;
-      await api("/api/ocr/baidu/install", {
-        method: "POST",
-        body: JSON.stringify({ url: inputs.get("ocr_check_url").value }),
-      });
-      await checkOCR();
-    } catch (error) {
-      showError(error);
-      ocrInstall.disabled = false;
-    }
-  });
-  ocrInstall.id = "ocr-install";
-  ocrInstall.disabled = true;
-  const ocrStatus = node(
-    "small",
-    "help",
-    "Optional container: baidu-ocr. Check service availability before installation.",
-  );
-  ocrStatus.id = "ocr-status";
-  ocrActions.append(ocrCheck, ocrInstall, ocrStatus);
-  $("review-fields").append(ocrActions);
-  add(
-    "review-fields",
     "automatic_review",
     "Automatic Work review (uses Work allowance)",
     "checkbox",
@@ -696,12 +704,17 @@ function build() {
     "number",
   );
   add(
-    "local-fields",
+    "source-fields",
     "local_source_urls",
-    "Official manufacturer source URLs",
+    "Additional official pages (optional)",
     "text",
   );
-  add("local-fields", "local_search_url", "Optional SearXNG server", "url");
+  add(
+    "source-fields",
+    "local_search_url",
+    "Optional source discovery server",
+    "url",
+  );
   inputs.get("local_ram_gb").addEventListener("change", () => {
     const preset = bootstrap.local_llm.presets.find(
       (p) => p.ram_gb === Number(inputs.get("local_ram_gb").value),
@@ -861,6 +874,12 @@ function renderSources() {
 function refresh() {
   updateModels();
   const data = settings();
+  const isBaidu = data.extraction_model === "baidu/Unlimited-OCR-cpu";
+  $("baidu-fields").hidden = !isBaidu;
+  for (const name of ["method", "parser_language", "mineru_url", "formulas"]) {
+    inputs.get(name).disabled = isBaidu;
+  }
+  if (isBaidu) inputs.get("formulas").checked = true;
   inputs.get("local_preload").disabled = !data.local_keep_loaded;
   $("page-fields").hidden = !data.page_selection;
   $("page-scope-note").textContent = data.page_selection
@@ -883,9 +902,8 @@ function refresh() {
   $("run").disabled =
     invalidSelection ||
     missingModels.length > 0 ||
-    (data.ocr_check_model !== "none" &&
-      (!ocrAvailability.installed ||
-        ocrAvailability.url !== data.ocr_check_url));
+    (data.extraction_model === "baidu/Unlimited-OCR-cpu" &&
+      (!ocrAvailability.installed || ocrAvailability.url !== data.baidu_url));
   $("preview").disabled = invalidSelection;
   $("queue-summary").replaceChildren();
   let total = 0;
@@ -1567,7 +1585,7 @@ async function upload(files) {
   }
   $("pdf-upload").value = "";
 }
-function table(headers, rows) {
+function table(headers, rows, metadata = []) {
   const result = document.createElement("table");
   const head = document.createElement("thead"),
     tr = document.createElement("tr");
@@ -1575,8 +1593,14 @@ function table(headers, rows) {
   head.append(tr);
   result.append(head);
   const body = document.createElement("tbody");
-  for (const row of rows) {
+  for (const [index, row] of rows.entries()) {
     const tr = document.createElement("tr");
+    if (metadata[index]) {
+      tr.className = metadata[index].className;
+      tr.dataset.status = metadata[index].status;
+      tr.title = metadata[index].label;
+      tr.setAttribute("aria-label", metadata[index].label);
+    }
     for (const value of row) {
       const td = document.createElement("td");
       if (value instanceof Node) td.append(value);
@@ -1735,7 +1759,6 @@ async function loadLibrary() {
             "Revision",
             "Pages",
             "Tools",
-            "Status",
             "Processed / source modified",
             "Confidence · average / worst",
             "Technical history",
@@ -1747,11 +1770,6 @@ async function loadLibrary() {
             c.revision,
             c.pages,
             c.product_count,
-            node(
-              "span",
-              `catalog-state ${c.status === "loaded" || c.status === "registered" ? "loaded" : c.status === "validated" ? "validated" : "attention"}`,
-              c.status === "loaded" ? "Loaded · not parsed" : c.status,
-            ),
             c.technical?.completed_at || c.source_modified_at
               ? new Date(
                   c.technical?.completed_at || c.source_modified_at,
@@ -1770,6 +1788,11 @@ async function loadLibrary() {
                 })
               : "—",
           ]),
+          catalogs.map((c) => ({
+            className: `catalog-row ${["loaded", "registered"].includes(c.status) ? "loaded" : c.status === "validated" ? "validated" : "attention"}`,
+            status: c.status,
+            label: `${c.name}: ${c.status === "loaded" ? "Loaded, not parsed" : c.status}`,
+          })),
         )
       : node("p", "help", "No loaded or registered catalogs match."),
   );
@@ -1846,12 +1869,12 @@ function formatGiB(bytes) {
   return bytes == null ? "—" : `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
 }
 async function checkOCR() {
-  const url = inputs.get("ocr_check_url").value;
+  const url = inputs.get("baidu_url").value;
   const info = await api("/api/ocr/baidu?url=" + encodeURIComponent(url));
-  if (url !== inputs.get("ocr_check_url").value) return;
+  if (url !== inputs.get("baidu_url").value) return;
   ocrAvailability = { url, installed: !!info.installed };
   const option = inputs
-    .get("ocr_check_model")
+    .get("extraction_model")
     .querySelector('option[value="baidu/Unlimited-OCR-cpu"]');
   option.textContent = `${info.installed ? "●" : "○"} Baidu Unlimited-OCR · experimental CPU${info.installed ? " · installed" : " · not installed"}`;
   option.disabled = !info.installed;
@@ -1864,7 +1887,7 @@ async function checkOCR() {
       : "Install Baidu weights";
   $("ocr-status").textContent = info.available
     ? info.installed
-      ? "Pinned CPU model ready. OCR supplies evidence; the review model still makes the decision."
+      ? "CPU extraction model ready. Select it above to extract page text and RAW tables."
       : busy
         ? "Downloading pinned model files. Progress is logged in the Baidu CPU container."
         : info.installation?.error ||
@@ -1872,6 +1895,34 @@ async function checkOCR() {
     : "Start the optional baidu-ocr CPU container. See deploy/baidu-cpu/README.md.";
   if (busy) setTimeout(() => checkOCR().catch(showError), 5000);
   refresh();
+}
+function renderOfficialSources(run) {
+  const box = $("official-source-status"),
+    source = run?.official_sources;
+  box.hidden = !source;
+  if (!source) return;
+  box.replaceChildren(
+    node("strong", "", "Official manufacturer sources · fixed for this run"),
+  );
+  for (const url of source.official_urls || []) {
+    const link = node("a", "", url);
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    const line = node("p");
+    line.append(link);
+    box.append(line);
+  }
+  box.append(
+    node(
+      "small",
+      "help",
+      source.status === "ready"
+        ? "Resolved automatically before review. All review tasks use the same saved source snapshot."
+        : source.reason ||
+            "Official evidence is unavailable. Internet checks remain unverified.",
+    ),
+  );
 }
 function renderPerformance(run) {
   let box = $("performance-status");
@@ -1885,11 +1936,13 @@ function renderPerformance(run) {
     .after(box);
   const open = box.open,
     p = run?.performance,
-    g = ["loading", "queued", "generating", "prefill"].includes(
-      run?.ocr_generation?.status,
-    )
-      ? run.ocr_generation
-      : run?.generation;
+    g =
+      run?.current_stage === "parse" &&
+      ["loading", "queued", "generating", "prefill"].includes(
+        run?.extraction_generation?.status,
+      )
+        ? run.extraction_generation
+        : run?.generation;
   box.hidden = !p?.current && !g;
   if (box.hidden) return;
   box.replaceChildren(node("summary", "", "Live performance & bottlenecks"));
@@ -2343,6 +2396,7 @@ function renderLocation(run) {
   }
   renderModelLoad(run);
   renderPerformance(run);
+  renderOfficialSources(run);
   if (task) {
     const box = $(task.stage === "final" ? "final-pending" : "review-pending");
     box.hidden = false;
@@ -3467,6 +3521,9 @@ async function init() {
     setInterval(() => updateServices().catch(showError), 15000);
     setInterval(() => pollModelInstalls(), 1500);
     updateServices().catch(showError);
+    checkOCR().catch((error) => {
+      $("ocr-status").textContent = error.message;
+    });
   } catch (error) {
     showError(error);
   }

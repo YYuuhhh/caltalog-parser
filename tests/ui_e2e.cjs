@@ -183,7 +183,7 @@ const base = process.env.PIPELINE_UI_URL || "http://127.0.0.1:7861";
     assert.equal(await page.locator('option[value="chatgpt"]').count(), 0);
     assert.equal(
       await page.locator("select[name=extraction_model] option").count(),
-      1,
+      2,
     );
     assert.equal(await page.locator("input[name=review_rows]").count(), 0);
     assert.equal(await page.locator("input[name=catalog_id]").count(), 0);

@@ -30,7 +30,7 @@ CHECKS = {
 GOALS = {
     "correctness": "Compare every extracted value and table alignment in this packet with the original PDF page image. Detect OCR, shifted rows/columns, units, fit classes and tolerances. Do not silently fix RAW.",
     "completeness": "Inspect the original page for every table, product row, figure, heading and footnote. Compare against the extraction inventory. Account for repeated headers and image-only dimensions. Mark missing or unreadable content explicitly.",
-    "internet": "Verify the extracted product identifiers and engineering values against current official manufacturer sources on the live internet. Cite the precise product/catalog pages. Compare revisions; discrepancies with a newer catalog are findings, never overwrite the original.",
+    "internet": "Verify extracted product identifiers and engineering values against the official manufacturer evidence saved at review start. Cite precise product/catalog pages from that snapshot. Compare revisions; discrepancies with a newer catalog are findings, never overwrite the original.",
     "mapping": "Build this manufacturer's series-specific mapping and a concise symbol dictionary for worksheet 2 of its normalized products workbook. Each definition should be one or two short sentences with enough detail to distinguish the parameter, units and reference points. A letter can have different meanings in different series. Include coating/material abbreviations that occur in the data. If the PDF does not define a coating or term, search official manufacturer web sources for its meaning; record a precise URL or explicitly leave it unverified. Identify product order numbers, families, geometry, fits and tolerances. Propose only evidence-supported mappings; never borrow another manufacturer's lettering.",
     "final": "Independently validate each tool in this packet: manufacturer, identity, all letters mapped to correct parameter meanings, every numeric/text value including units/tolerances, dimensioned drawings and footnotes. Check the original PDF image and official manufacturer internet sources. Inspect duplicate candidates and compare all parameters. An empty product list with product rows in the source is incomplete and cannot pass.",
 }
@@ -210,7 +210,7 @@ def create_task(
         + ".\n"
         + f"Required confidence for a pass: {confidence_threshold}. Lower confidence must be issues or unverified.\n"
         + (
-            "Use live web search and official manufacturer sources. If unavailable, mark the relevant checks unverified.\n"
+            "Use the frozen official manufacturer evidence supplied in this task. The authority and source snapshot were resolved before reviewing began. Do not select different sites or silently refresh sources. If the excerpts do not support a check, mark it unverified.\n"
             if stage in ("internet", "mapping", "final")
             else "Use only the supplied page and extraction evidence.\n"
         )
@@ -319,6 +319,31 @@ def validate_result(request, result):
     ):
         raise ValueError("Review result belongs to a different task or context.")
     checks = result["checks"]
+    authority = request.get("context", {}).get("official_sources")
+    if authority is not None:
+        urls = {source["url"] for source in authority.get("evidence", [])}
+        for check in checks:
+            if (
+                check.get("check")
+                in {
+                    "manufacturer_sources",
+                    "data_correctness",
+                    "symbol_meanings",
+                    "internet",
+                }
+                and check.get("status") == "passed"
+                and check.get("source_url") not in urls
+            ):
+                raise ValueError(
+                    "Internet approval needs a citation from this task's frozen official manufacturer sources."
+                )
+        if any(
+            symbol.get("source_url") and symbol["source_url"] not in urls
+            for symbol in result.get("symbols", [])
+        ):
+            raise ValueError(
+                "Symbol definitions must cite this task's frozen official manufacturer sources."
+            )
     if len(checks) != len(request["required_checks"]) or {
         c["check"] for c in checks
     } != set(request["required_checks"]):

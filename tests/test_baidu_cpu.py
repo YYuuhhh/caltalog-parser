@@ -68,7 +68,7 @@ def test_service_rejects_image_binding_and_limits_before_starting_worker(
         assert api.post("/ocr", json={**data, "max_tokens": 999999}).status_code == 422
 
 
-def test_cpu_ocr_is_a_separate_evidence_model_and_not_an_ollama_approval_model():
+def test_cpu_ocr_is_a_pinned_extraction_model_not_an_ollama_approval_model():
     assert client.OPTION == "baidu/Unlimited-OCR-cpu"
     assert runtime.REVISION and len(runtime.REVISION) == 40
     assert set(runtime.HASHES) == {"modeling_unlimitedocr.py", "modeling_deepseekv2.py"}

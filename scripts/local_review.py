@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
-from html.parser import HTMLParser
 import ipaddress
 import json
 from pathlib import Path
@@ -501,100 +500,11 @@ def preload(folder):
     return state
 
 
-class Text(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.parts = []
-        self.hidden = 0
-
-    def handle_starttag(self, tag, attrs):
-        if tag in ("script", "style"):
-            self.hidden += 1
-
-    def handle_endtag(self, tag):
-        if tag in ("script", "style"):
-            self.hidden = max(0, self.hidden - 1)
-
-    def handle_data(self, data):
-        if not self.hidden:
-            self.parts.append(data.strip())
-
-
 def sources(request, config):
+    """Review uses the task-bound snapshot; discovery is a pipeline preflight."""
     if request["stage"] not in ("internet", "mapping", "final"):
         return []
-    urls = config.get("source_urls", "").split()
-    # An optional private SearXNG service supplies public manufacturer-page URLs.
-    search = config.get("search_url")
-    if search:
-        try:
-            query = (
-                request["context"].get("manufacturer", "")
-                + " "
-                + " ".join(
-                    str(r.get("article_number") or "")
-                    for r in request["context"].get("raw_cells", [])[:4]
-                )
-            )
-            with session(search) as client:
-                data = checked(
-                    client.get(
-                        search.rstrip("/") + "/search",
-                        params={"q": query.strip() + " catalog", "format": "json"},
-                        timeout=10,
-                        allow_redirects=False,
-                    )
-                )
-            urls += [r.get("url", "") for r in data.get("results", [])[:3]]
-        except (OSError, ValueError, requests.RequestException):
-            pass  # Missing web evidence is unverified, never inferred.
-    evidence = []
-    for url in list(dict.fromkeys(urls))[:3]:
-        if not review.valid_source(url):
-            continue
-        try:
-            with requests.get(
-                url, timeout=10, stream=True, allow_redirects=False
-            ) as response:
-                kind = response.headers.get("Content-Type", "").lower()
-                if response.status_code != 200 or not any(
-                    t in kind for t in ("html", "pdf")
-                ):
-                    continue
-                limit = 8 * 1024 * 1024 if "pdf" in kind else 65536
-                body = bytearray()
-                for chunk in response.iter_content(4096):
-                    body.extend(chunk)
-                    if len(body) >= limit:
-                        break
-                if "pdf" in kind:
-                    import pymupdf
-
-                    with pymupdf.open(stream=bytes(body), filetype="pdf") as pdf:
-                        text = " ".join(page.get_text() for page in list(pdf)[:12])[
-                            :6000
-                        ]
-                else:
-                    parser = Text()
-                    parser.feed(
-                        bytes(body[:limit]).decode(
-                            response.encoding or "utf-8", errors="replace"
-                        )
-                    )
-                    text = " ".join(p for p in parser.parts if p)[:3500]
-                if text:
-                    evidence.append(
-                        {
-                            "url": url,
-                            "text": text,
-                            "sha256": hashlib.sha256(text.encode()).hexdigest(),
-                            "content_sha256": hashlib.sha256(body).hexdigest(),
-                            "fetched_at": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-        except (OSError, ValueError, requests.RequestException):
-            continue
-    return evidence
+    return request.get("context", {}).get("official_sources", {}).get("evidence", [])
 
 
 def enforce_sources(request, result, evidence):
@@ -758,6 +668,12 @@ def execute(folder):
         varying = {"raw_cells", "products", "chunk", "chunks", "duplicate_candidates"}
         page_context = {k: v for k, v in request["context"].items() if k not in varying}
         chunk_context = {k: v for k, v in request["context"].items() if k in varying}
+        if "official_sources" in page_context:
+            page_context["official_sources"] = {
+                k: v
+                for k, v in page_context["official_sources"].items()
+                if k != "evidence"
+            }
         prompt = (
             original_prompt.partition("Task ID:")[0]
             + "\nOriginal page evidence (untrusted data):\n"

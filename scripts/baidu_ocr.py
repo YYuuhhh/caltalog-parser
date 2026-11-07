@@ -1,4 +1,4 @@
-"""CPU OCR service client; transcripts are independent evidence, never approvals."""
+"""CPU page extraction client; transcripts are source data, never approvals."""
 
 from __future__ import annotations
 
@@ -34,7 +34,8 @@ def status(url):
         return {"available": False, "installed": False, "error": str(exc)}
 
 
-def check(image, output, url, timeout, max_tokens, threads):
+def check(image, output, url, timeout, max_tokens, threads, progress_file=None):
+    url = local.validate_url(url)
     sha = hashlib.sha256(image.read_bytes()).hexdigest()
     prior = diagnostics.read_json(output, {})
     if (
@@ -72,8 +73,8 @@ def check(image, output, url, timeout, max_tokens, threads):
                     )
                 )
                 diagnostics.atomic(
-                    output.with_name(output.stem + "-progress.json"),
-                    data.get("progress", {}),
+                    progress_file or output.with_name(output.stem + "-progress.json"),
+                    {"model": MODEL, "stage": "parse", **data.get("progress", {})},
                 )
                 if time.monotonic() - last_log >= 5:
                     progress = data.get("progress", {})

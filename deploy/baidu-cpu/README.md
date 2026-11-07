@@ -12,9 +12,10 @@ is installed.
 **This CPU port is experimental. Real weight-backed inference and its accuracy
 on the target server have not been validated yet.** Source patch checks, HTTP
 contracts, cancellation, real CPU-only container startup and a tiny language-model
-prefill/decode test have passed without OCR weights. It supplies an independent OCR
-transcript to the page/final reviewer; it cannot approve semantic correctness,
-internet matches or completeness. It does not replace MinerU's RAW table export.
+prefill/decode test have passed without OCR weights. It is an alternative to
+MinerU in **Extract pages**, producing source-bound page artifacts and RAW tables
+for subsequent reviews. It cannot approve semantic correctness, internet matches
+or completeness.
 
 ## Prepare the optional runtime once
 
@@ -47,11 +48,17 @@ For Docker installations without Buildx, prefix build commands with
 
 ## Install and use
 
-In **Review evidence**, click **Check CPU OCR service**, then **Install Baidu
-weights**. Installation is explicit; starting the container does not download
+In **Extract pages**, expand **Optional Baidu CPU runtime**, click **Check CPU
+OCR service**, then **Install Baidu weights**. Installation is explicit; starting the container does not download
 weights or load a model. Follow the download with
 `sudo docker compose logs -f baidu-ocr`. After installation, select
-**Baidu Unlimited-OCR · experimental CPU** in **Independent OCR checking model**.
+**Baidu Unlimited-OCR · experimental CPU** in **CPU extraction model**.
+Each physical page is rendered at the selected DPI and sent to this CPU service.
+Adjust the per-page output token budget for dense pages. Automatic quality
+retries raise DPI up to 300 and retain an improved extraction only when it loses
+no table cells. Pages without measurable text confidence go directly to model
+review rather than repeating OCR without a way to compare quality. MinerU's native-text method, language group and formula switch
+do not control this generative OCR model and are disabled for this selection.
 
 Weights and patched sources persist in `data/baidu-ocr/` (override with
 `BAIDU_OCR_DATA_DIR`). Jobs, raw transcripts, errors and token progress also live
@@ -61,13 +68,16 @@ The CPU model is loaded in a separate worker for each uncached page and released
 when that page finishes. Existing Qwen and OCR allocations must fit together.
 The adapter keeps one OCR job active and uses a bounded token limit. Stop or
 timeout cancels the remote worker process; an incomplete or mismatched result
-blocks the selected check. Completed OCR evidence is cached by original image
-SHA256, pinned revision and output limit, and never changes original RAW data.
+fails extraction. Completed pages are resumed only when their PDF/page hash,
+model revision, DPI and extraction options match. Changing models or DPI creates
+new immutable artifacts.
 
-The main pipeline saves `page-N-baidu.json` and `page-N-baidu-progress.json`
-beside page evidence in `logs/ui-runs/<run-id>/`. The original image and the
-transcript are included in fresh reviewer context. Model agreement is not proof
-of correctness: the review must still inspect the PDF and official sources.
+Each parsed page retains its PNG, raw OCR response, transcript, content list,
+cache manifest and ZIP beneath `parsed/ui-runs/<run-id>/`. HTML and Markdown
+tables feed the ordinary lossless RAW exporter. No table coordinates or model
+confidence are fabricated. `logs/ui-runs/<run-id>/extraction-generation.json`
+supplies extraction token progress to the UI. The later review stages inspect
+these artifacts against the original PDF and frozen manufacturer web evidence.
 
 Upstream: [model and code](https://huggingface.co/baidu/Unlimited-OCR),
 [Baidu repository](https://github.com/baidu/Unlimited-OCR),

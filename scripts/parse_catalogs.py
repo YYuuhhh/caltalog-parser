@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import sys
 import time
 import uuid
@@ -97,6 +98,10 @@ def check_parse_response(response: requests.Response, run_dir: Path) -> None:
 
 
 def parse_one(args: argparse.Namespace, pdf: Path) -> dict[str, object]:
+    if args.backend == "baidu-cpu":
+        import baidu_extract
+
+        return baidu_extract.parse_one(args, pdf)
     source_sha = sha256_file(pdf)
     run_id = (
         f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')}-{uuid.uuid4().hex}"
@@ -189,6 +194,37 @@ def parse_one(args: argparse.Namespace, pdf: Path) -> dict[str, object]:
     return result
 
 
+def matches_backend(artifact, args):
+    metadata = list(artifact.parent.glob("files/**/cache_manifest.json"))
+    if len(metadata) != 1:
+        return False
+    try:
+        value = json.loads(metadata[0].read_text())
+    except (OSError, ValueError):
+        return False
+    config = value.get("config", {})
+    backend = (
+        value.get("parser_backend")
+        or config.get("effective_backend")
+        or config.get("backend")
+        or config.get("request", {}).get("backend")
+    )
+    if args.backend == "baidu-cpu":
+        from baidu_cpu_runtime import REVISION
+
+        return backend == "baidu-cpu" and all(
+            config.get(k) == v
+            for k, v in {
+                "revision": REVISION,
+                "dpi": args.ocr_dpi,
+                "output_tokens": args.ocr_output_tokens,
+                "table_enable": args.tables,
+                "formula_enable": args.formula,
+            }.items()
+        )
+    return backend in (None, args.backend)
+
+
 def parse_manifest(args: argparse.Namespace) -> dict[str, object]:
     """Verify the complete inventory before any request and commit each page."""
     import copy
@@ -248,6 +284,7 @@ def parse_manifest(args: argparse.Namespace) -> dict[str, object]:
                 and key in selections
                 and artifact.is_file()
                 and sha256_file(artifact) == state.get("artifact_sha256")
+                and matches_backend(artifact, args)
             ):
                 results.append(
                     {
@@ -364,10 +401,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--backend",
-        choices=("pipeline", "vlm-transformers"),
+        choices=("pipeline", "vlm-transformers", "baidu-cpu"),
         default=os.environ.get("MINERU_BACKEND", "pipeline"),
     )
     parser.add_argument("--language", default="latin")
+    parser.add_argument("--ocr-dpi", type=int, default=144)
+    parser.add_argument("--ocr-output-tokens", type=int, default=2048)
+    parser.add_argument("--cpu-threads", type=int, default=0)
+    parser.add_argument("--progress-file", type=Path)
     parser.add_argument("--method", choices=("auto", "txt", "ocr"), default="auto")
     parser.add_argument("--start-page", type=int)
     parser.add_argument("--end-page", type=int)
@@ -391,6 +432,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.backend == "baidu-cpu":
+
+        def stopped(signum, frame):
+            raise InterruptedError("CPU extraction stopped by user.")
+
+        signal.signal(signal.SIGTERM, stopped)
+        if not args.manifest and (
+            args.start_page is None or args.end_page != args.start_page
+        ):
+            print(
+                "CPU Unlimited-OCR requires --manifest for full catalogs, or matching --start-page and --end-page for one page.",
+                file=sys.stderr,
+            )
+            return 2
     if args.manifest:
         try:
             summary = parse_manifest(args)

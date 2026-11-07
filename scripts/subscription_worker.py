@@ -68,6 +68,7 @@ def command(binary, folder, request):
         "-c",
         'web_search="live"'
         if request["stage"] in ("internet", "mapping", "final")
+        and "official_sources" not in request.get("context", {})
         else 'web_search="disabled"',
         "-c",
         "features.multi_agent=false",
@@ -246,6 +247,7 @@ def run(queue, once=False, pipeline_url=None):
                     )
                     if (
                         request["stage"] in ("internet", "mapping", "final")
+                        and "official_sources" not in request.get("context", {})
                         and result["status"] == "passed"
                         and not searched
                     ):
@@ -254,6 +256,11 @@ def run(queue, once=False, pipeline_url=None):
                         )
                     execution = json.loads((folder / "execution.json").read_text())
                     execution["web_search_events"] = searched
+                    execution["official_source_snapshot"] = (
+                        request.get("context", {})
+                        .get("official_sources", {})
+                        .get("snapshot_sha256")
+                    )
                     atomic_json(folder / "execution.json", execution)
                     atomic_json(folder / "result.json", result)
                 except Exception as exc:

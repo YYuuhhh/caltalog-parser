@@ -40,6 +40,7 @@ import model_catalog as models
 import workbench_outputs as outputs
 import system_diagnostics as diagnostics
 import baidu_ocr
+import manufacturer_sources as official
 import review_notes
 import processing_control as control
 import local_review as local
@@ -101,7 +102,10 @@ class Settings(BaseModel):
     page_selection: bool = False
     first_page: int = Field(1, ge=1)
     last_page: int | None = Field(None, ge=1)
-    extraction_model: Literal["mineru-3.4.5-pipeline"] = "mineru-3.4.5-pipeline"
+    extraction_model: Literal["mineru-3.4.5-pipeline", "baidu/Unlimited-OCR-cpu"] = (
+        "mineru-3.4.5-pipeline"
+    )
+    extraction_dpi: int = Field(144, ge=100, le=300)
     method: Literal["auto", "txt", "ocr"] = "auto"
     parser_language: Literal[
         "ch",
@@ -144,9 +148,8 @@ class Settings(BaseModel):
     local_load_into_ram: bool = True
     local_temperature: float = Field(0, ge=0, le=2, allow_inf_nan=False)
     local_cpu_threads: int = Field(SYSTEM_DEFAULTS["local_cpu_threads"], ge=0, le=4096)
-    ocr_check_model: Literal["none", "baidu/Unlimited-OCR-cpu"] = "none"
-    ocr_check_url: str = "http://baidu-ocr:8095"
-    ocr_check_tokens: int = Field(2048, ge=256, le=8192)
+    baidu_url: str = "http://baidu-ocr:8095"
+    baidu_output_tokens: int = Field(2048, ge=256, le=8192)
     local_source_urls: str = Field("", max_length=4000)
     local_search_url: str = ""
     automatic_review: bool = True
@@ -155,6 +158,20 @@ class Settings(BaseModel):
     review_dpi: int = Field(144, ge=100, le=300)
     review_batch_rows: int = Field(20, ge=10, le=100)
     force_structure: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def legacy_ocr_settings(cls, value):
+        if isinstance(value, dict):
+            value = dict(value)
+            value.pop("ocr_check_model", None)
+            for old, new in (
+                ("ocr_check_url", "baidu_url"),
+                ("ocr_check_tokens", "baidu_output_tokens"),
+            ):
+                if old in value:
+                    value.setdefault(new, value.pop(old))
+        return value
 
     @model_validator(mode="after")
     def dependencies(self):
@@ -180,7 +197,7 @@ class Settings(BaseModel):
             raise ValueError("Specify at least one language and tool family.")
         model_root = ROOTS["catalogs"] / "library"
         local.validate_url(self.local_url)
-        local.validate_url(self.ocr_check_url)
+        local.validate_url(self.baidu_url)
         if self.local_search_url:
             local.validate_url(self.local_search_url)
         if any(not review.valid_source(u) for u in self.local_source_urls.split()):
@@ -244,6 +261,7 @@ def validate_settings(config):
 
 
 def parse_command(config, folder, output, first, last, method=None):
+    baidu = config.extraction_model == baidu_ocr.OPTION
     args = [
         sys.executable,
         str(SCRIPTS / "parse_catalogs.py"),
@@ -256,13 +274,13 @@ def parse_command(config, folder, output, first, last, method=None):
         "--logs-root",
         str(folder / "parsing"),
         "--api-url",
-        config.mineru_url,
+        config.baidu_url if baidu else config.mineru_url,
         "--backend",
-        "pipeline",
+        "baidu-cpu" if baidu else "pipeline",
         "--language",
         config.parser_language,
         "--method",
-        method or config.method,
+        "ocr" if baidu else method or config.method,
         "--start-page",
         str(first),
         "--end-page",
@@ -275,6 +293,22 @@ def parse_command(config, folder, output, first, last, method=None):
         str(ROOTS["logs"] / "queue-control.json"),
         "--resume-completed",
     ]
+    if baidu:
+        retry = (
+            int((method or "").rsplit("-", 1)[-1])
+            if (method or "").startswith("baidu-retry-")
+            else 0
+        )
+        args += [
+            "--ocr-dpi",
+            str(min(300, round(config.extraction_dpi * 1.5**retry))),
+            "--ocr-output-tokens",
+            str(config.baidu_output_tokens),
+            "--cpu-threads",
+            str(config.local_cpu_threads),
+            "--progress-file",
+            str(folder / "extraction-generation.json"),
+        ]
     for enabled, flag in (
         (config.force_parse, "--force"),
         (not config.tables, "--no-tables"),
@@ -594,13 +628,9 @@ class Jobs:
         state["performance"] = diagnostics.read_json(
             self.folder(job) / "performance.json", {}
         )
-        page = state.get("current_page", {})
-        if page.get("page") and page.get("stage") == state.get("current_stage"):
-            state["ocr_generation"] = diagnostics.read_json(
-                self.folder(job) / f"page-{int(page['page'])}-baidu-progress.json", {}
-            )
-            if state["ocr_generation"]:
-                state["ocr_generation"]["stage"] = page["stage"]
+        state["extraction_generation"] = diagnostics.read_json(
+            self.folder(job) / "extraction-generation.json", {}
+        )
         latest = state.get("review_tasks", [])
         if latest:
             task_id = latest[-1].get("id", "")
@@ -878,6 +908,7 @@ class Jobs:
                 ("manual-review.json", "Manual review evidence"),
                 ("run.log", "Run log"),
                 ("performance.json", "Performance measurements"),
+                ("official-sources.json", "Frozen official manufacturer sources"),
                 ("performance.jsonl", "Resource sample history"),
                 ("technical.json", "Catalog technical history"),
             ]
@@ -1123,15 +1154,23 @@ class Jobs:
 
     def extract(self, job, config, state, output):
         folder = self.folder(job)
-        health = requests.get(config.mineru_url.rstrip("/") + "/health", timeout=10)
-        health.raise_for_status()
-        runtime = health.json()
-        if runtime.get("device") != "cpu":
-            raise ValueError("This workbench requires the CPU MinerU service.")
-        if runtime.get("model_revision") != config.extraction_model:
-            raise ValueError(
-                "The selected extraction model does not match the running CPU model bundle."
-            )
+        baidu = config.extraction_model == baidu_ocr.OPTION
+        if baidu:
+            runtime = baidu_ocr.status(config.baidu_url)
+            if not runtime.get("available") or not runtime.get("installed"):
+                raise ValueError(
+                    "Baidu CPU extraction needs the running CPU container and installed weights."
+                )
+        else:
+            health = requests.get(config.mineru_url.rstrip("/") + "/health", timeout=10)
+            health.raise_for_status()
+            runtime = health.json()
+            if runtime.get("device") != "cpu":
+                raise ValueError("This workbench requires the CPU MinerU service.")
+            if runtime.get("model_revision") != config.extraction_model:
+                raise ValueError(
+                    "The selected extraction model does not match the running CPU model bundle."
+                )
         pages = len(PdfReader(config.source_pdf).pages)
         self.command(
             job,
@@ -1157,9 +1196,20 @@ class Jobs:
                 if (
                     not config.automatic_quality
                     or score["confidence"] >= config.confidence_threshold
+                    or baidu
+                    and score["native_text_coverage"] is None
+                    and score["ocr_mean_confidence"] is None
                 ):
                     break
-                method = quality.retry_method(method, score, index)
+                if baidu and min(300, round(config.extraction_dpi * 1.5**index)) == min(
+                    300, round(config.extraction_dpi * 1.5 ** (index - 1))
+                ):
+                    break
+                method = (
+                    f"baidu-retry-{index}"
+                    if baidu
+                    else quality.retry_method(method, score, index)
+                )
                 if method is None or method in {
                     attempt["method"] for attempt in attempts
                 }:
@@ -1239,8 +1289,67 @@ class Jobs:
             "failed": sum(p["status"] == "failed" for p in manifest["page_states"]),
         }
 
+    def prepare_official_sources(self, job, stage, config, state):
+        source_path = self.folder(job) / "official-sources.json"
+        if not source_path.exists():
+            progress = next(s for s in state["stages"] if s["id"] == stage)
+            progress["progress"] = {
+                "percent": 0,
+                "estimated": True,
+                "detail": "Resolving and freezing official manufacturer sources",
+            }
+            self.save(job, state)
+            self.command(
+                job,
+                stage,
+                800000,
+                [
+                    sys.executable,
+                    str(SCRIPTS / "manufacturer_sources.py"),
+                    "--source",
+                    config.source_pdf,
+                    "--manufacturer-id",
+                    config.manufacturer_id,
+                    "--manufacturer",
+                    library().manufacturer(config.manufacturer_id)["name"],
+                    "--output",
+                    str(source_path),
+                    "--manifest",
+                    str(self.folder(job) / "catalog.yaml"),
+                    "--extra-urls",
+                    config.local_source_urls,
+                    "--search-url",
+                    config.local_search_url,
+                ],
+            )
+        source_snapshot = official.verify(
+            diagnostics.read_json(source_path), source_path.parent
+        )
+        if source_snapshot["identity"][
+            "manufacturer_id"
+        ] != config.manufacturer_id or source_snapshot["identity"][
+            "source_sha256"
+        ] != registry.digest(Path(config.source_pdf)):
+            raise ValueError(
+                "Official source snapshot does not belong to this manufacturer/catalog."
+            )
+        state["official_sources"] = {
+            key: source_snapshot[key]
+            for key in (
+                "status",
+                "official_urls",
+                "official_domains",
+                "snapshot_sha256",
+                "reason",
+            )
+        }
+        self.save(job, state)
+        return source_snapshot
+
     def review_stage(self, job, stage, config, state, output):
         import fitz
+
+        source_snapshot = self.prepare_official_sources(job, stage, config, state)
 
         if (
             config.final_provider if stage == "final" else config.review_provider
@@ -1295,31 +1404,6 @@ class Jobs:
                 image = folder / f"page-{index + 1}.png"
                 if not image.is_file():
                     pdf[index].get_pixmap(dpi=config.review_dpi).save(image)
-                ocr_evidence = None
-                if config.ocr_check_model != "none":
-                    ocr_path = folder / f"page-{index + 1}-baidu.json"
-                    self.command(
-                        job,
-                        stage,
-                        900000 + index,
-                        [
-                            sys.executable,
-                            str(SCRIPTS / "baidu_ocr.py"),
-                            "--image",
-                            str(image),
-                            "--output",
-                            str(ocr_path),
-                            "--url",
-                            config.ocr_check_url,
-                            "--timeout",
-                            str(config.review_timeout),
-                            "--max-tokens",
-                            str(config.ocr_check_tokens),
-                            "--threads",
-                            str(config.local_cpu_threads),
-                        ],
-                    )
-                    ocr_evidence = diagnostics.read_json(ocr_path)
                 rows = [
                     r
                     for r in raw
@@ -1488,21 +1572,11 @@ class Jobs:
                             for r in rows
                             if int(r["row_index"]) < 2
                         ]
-                    if ocr_evidence:
-                        context["independent_ocr"] = {
-                            key: ocr_evidence[key]
-                            for key in (
-                                "model",
-                                "revision",
-                                "device",
-                                "source_sha256",
-                                "text",
-                                "complete",
-                            )
-                        }
-                        context["independent_ocr"]["role"] = (
-                            "Untrusted independent OCR transcription; compare with the original PDF image. Agreement does not prove correctness."
-                        )
+                    context["official_sources"] = official.packet(
+                        source_snapshot,
+                        context,
+                        stage in ("internet", "mapping", "final"),
+                    )
                     provider = (
                         config.final_provider
                         if stage == "final"
@@ -2249,7 +2323,8 @@ def catalog_technical(state):
                 "local_temperature",
                 "review_dpi",
                 "review_batch_rows",
-                "ocr_check_model",
+                "extraction_dpi",
+                "baidu_output_tokens",
             )
         },
         "stages": [

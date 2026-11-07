@@ -1971,13 +1971,6 @@ dialog::backdrop {
   margin-left: auto;
   font-size: 12px;
 }
-.catalog-state {
-  display: inline-block;
-  border-radius: 6px;
-  padding: 5px 8px;
-  font-size: 12px;
-  white-space: nowrap;
-}
 .manufacturer-directory {
   margin: 18px 0;
 }
@@ -1998,18 +1991,7 @@ dialog::backdrop {
 #library-catalogs .button {
   white-space: nowrap;
 }
-.catalog-state.loaded {
-  color: #9bbaff;
-  background: #678fff20;
-}
-.catalog-state.validated {
-  color: #70dcb6;
-  background: #70dcb618;
-}
-.catalog-state.attention {
-  color: #e8c37c;
-  background: #e8c37c18;
-}
+
 .library-legend {
   margin-right: 16px;
   font-size: 12px;
@@ -2057,15 +2039,12 @@ dialog::backdrop {
   color: #f3ac8d;
   font-size: 13px;
 }
-:root[data-theme="light"] .catalog-state.loaded,
 :root[data-theme="light"] .library-legend.loaded {
   color: #3155b4;
 }
-:root[data-theme="light"] .catalog-state.validated,
 :root[data-theme="light"] .library-legend.validated {
   color: #187b69;
 }
-:root[data-theme="light"] .catalog-state.attention,
 :root[data-theme="light"] .library-legend.attention {
   color: #8b651e;
 }
@@ -2075,6 +2054,26 @@ dialog::backdrop {
   flex-wrap: wrap;
   grid-column: 1/-1;
 }
+.ocr-runtime-setup {
+  grid-column: 1/-1;
+}
+.ocr-runtime-setup summary {
+  cursor: pointer;
+  margin-bottom: 12px;
+}
 .ocr-model-actions small {
   flex-basis: 100%;
+}
+
+.catalog-row.loaded {
+  background: #678fff16;
+}
+.catalog-row.validated {
+  background: #70dcb614;
+}
+.catalog-row.attention {
+  background: #e8c37c16;
+}
+.catalog-row:hover {
+  filter: brightness(1.08);
 }

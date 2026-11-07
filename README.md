@@ -79,7 +79,7 @@ The live performance dropdown follows each active stage. It shows measured CPU/R
 
 The **Catalog library** shortcut at the bottom left includes uploaded/imported PDFs that have not run yet, in a separate colour. Each processed catalog includes its dates, diagnostic average/worst confidence, actual review model executions, parameters, stage timing and available performance peaks. Earlier runs remain in its history. Old runs without recorded diagnostics show missing data rather than invented measurements.
 
-An optional **Independent OCR checking model** offers [Baidu Unlimited-OCR on CPU](deploy/baidu-cpu/README.md). This is an experimental, pinned CPU port of the original model; starting its separate container does not download weights. Install explicitly from the review UI, then select it to attach an independent page transcript to fresh review context. It does not replace semantic/internet validation or MinerU RAW export. Real model inference and accuracy on the server still need validation.
+In **Extract pages → CPU extraction model**, choose MinerU or optional [Baidu Unlimited-OCR on CPU](deploy/baidu-cpu/README.md). Baidu is an experimental, pinned CPU port of the original model. Start its separate container and install explicitly under **Optional Baidu CPU runtime**; unavailable models stay disabled. Baidu extracts rendered PDF pages into the same immutable page artifacts and lossless RAW workbook used by downstream stages. HTML and Markdown tables retain literal cells, without invented bounding boxes or confidence. Quality retries can increase rendering DPI; model review still compares the original PDF. Baidu is an extractor, not a review model. Real weight-backed inference and accuracy on the server still need validation.
 
 For a separate large server, use the [CPU-only container deployment](deploy/large-cpu/README.md).
 Run `make cpu-server-package` to create a transferable image archive and Compose
@@ -114,7 +114,7 @@ you reinstall it, choose another installed model, or select **No model**.
 Delete removes installed models; it does not stop downloads or clear unfinished
 download files.
 
-Supply precise HTTPS manufacturer product/catalog URLs or an optional private SearXNG server for internet checks. HTML and bounded PDF evidence are fetched and saved for the local model. A citation can only support a passed internet check if its source was actually retrieved. Missing sources stay **unverified**, and unresolved findings keep a catalog unvalidated. Local model self-reported confidence does not establish correctness.
+Before the first review, the application automatically resolves official manufacturer origins from its directory, or brand-matching domains declared in the original catalog (including extracted OCR text). It fetches a bounded set of official HTML/PDF pages and freezes URLs, content hashes, bodies and timestamps in `logs/ui-runs/<run-id>/official-sources.json` and `official-source-bodies/`. Every review stage and resumed run uses that same verified snapshot. Review tasks receive small deterministic excerpts and cannot approve internet checks using unrelated citations. Work review also disables live browsing for these snapshot-bound tasks. Missing or blocked sources stay **unverified**. The review card shows the chosen origins; additional official pages and an optional private SearXNG discovery server are advanced settings. Search snippets and distributor sites never establish an official origin. For an unknown brand without a catalog domain, explicit operator URLs can establish the origin. Local model self-reported confidence does not establish correctness.
 
 Run a real selected-page test, including both models and final validation:
 
@@ -186,7 +186,7 @@ Review image DPI and the size of review packets control visual evidence and cont
 
 1. **Page correctness:** every extracted value, column alignment, unit, fit and tolerance compared with the original page.
 2. **Page completeness:** all tables, rows, figures, headings and footnotes accounted for using the complete page inventory.
-3. **Internet verification:** current official manufacturer sources, precise citations and revision differences.
+3. **Internet verification:** official manufacturer evidence saved at review start, precise citations and revision differences.
 4. **Manufacturer mapping:** manufacturer- and series-specific parameter rules and concise symbol definitions. Definitions include geometry, units, family/series scope, PDF/web evidence and verification status. Missing coating/material definitions require official internet evidence during mapping review. Unsupported meanings remain proposed.
 5. **Final tool validation:** an independent fresh session checks tool identities, parameter letters and values, dimensioned images, original PDF, official internet sources and duplicate candidates.
 6. **Workbook integrity:** reopen and validate RAW and every structured workbook.
