@@ -148,6 +148,17 @@ def json_answer(text):
     return value
 
 
+def prompt_contract(schema):
+    """Describe every field without repeating the API's validation boilerplate."""
+    if schema.get("type") == "object":
+        return {
+            key: prompt_contract(value) for key, value in schema["properties"].items()
+        }
+    if schema.get("type") == "array":
+        return [prompt_contract(schema["items"])]
+    return schema
+
+
 def parse_answer(response, request, model, diagnostics):
     """Separate protocol failures, final answers and the Qwen parser workaround."""
     if response.get("model") != request["model"]:
@@ -278,7 +289,7 @@ def load_options(config):
     return options
 
 
-def stream_answer(client, url, payload, folder, timeout):
+def stream_answer(client, url, payload, folder, timeout, phase="review", prior=None):
     """Retain streamed evidence and publish throughput without displaying reasoning."""
     started, first, count, last_log = time.monotonic(), None, 0, 0
     state = {
@@ -287,6 +298,8 @@ def stream_answer(client, url, payload, folder, timeout):
         "model": payload["model"],
         "stage": diagnostics.read_json(folder / "request.json", {}).get("stage"),
         "task_id": folder.name,
+        "phase": phase,
+        "output_budget": payload.get("options", {}).get("num_predict"),
         "tokens_estimated": True,
         "chunks": 0,
         "tokens_per_second": None,
@@ -295,6 +308,12 @@ def stream_answer(client, url, payload, folder, timeout):
         "thinking_chars": 0,
         "answer_chars": 0,
     }
+    if prior:
+        state["prior_thinking"] = {
+            "tokens": prior["usage"].get("eval_count"),
+            "thinking_chars": prior["thinking_chars"],
+            "output_budget": prior["output_budget"],
+        }
     target = folder / "generation.json"
     diagnostics.atomic(target, state)
     content, thinking, result = [], [], {}
@@ -438,6 +457,173 @@ def stream_answer(client, url, payload, folder, timeout):
     finally:
         if response is not None:
             response.close()
+
+
+USAGE_FIELDS = (
+    "prompt_eval_count",
+    "prompt_eval_duration",
+    "eval_count",
+    "eval_duration",
+    "total_duration",
+    "load_duration",
+)
+
+
+def response_usage(response):
+    return {key: response.get(key) for key in USAGE_FIELDS}
+
+
+def generate_review(client, url, payload, folder, timeout, config, model, execution):
+    """Bound Qwen3-VL thinking, then reserve a separate complete JSON answer.
+
+    Ollama 0.32.5 leaves the schema disabled until thinking ends. Its renderer
+    and parser support an assistant prefill: an explicit closed thinking block
+    enters final-answer mode, where think=False enables the schema immediately.
+    https://github.com/ollama/ollama/blob/v0.32.5/model/renderers/qwen3vl.go
+    https://github.com/ollama/ollama/blob/v0.32.5/server/routes.go
+    """
+    import copy
+
+    deadline = time.monotonic() + timeout
+    bounded = payload.get("think") is True and model.get("family") == "qwen3vl"
+    original = copy.deepcopy(payload)
+    passes = []
+    answer_budget = payload["options"]["num_predict"]
+    if bounded:
+        requested = config.get("reasoning_tokens", 1024)
+        if (
+            not isinstance(requested, int)
+            or isinstance(requested, bool)
+            or not 128 <= requested <= 8192
+        ):
+            raise ValueError("Reasoning tokens must be between 128 and 8192.")
+        prompt_bytes = sum(
+            len(m.get("content", "").encode()) for m in payload["messages"]
+        )
+        available = (
+            config["context_tokens"] - prompt_bytes - answer_budget - 8192 - 1536
+        )
+        budget = min(requested, available // 8)
+        if budget < 128:
+            raise ValueError(
+                "Local context budget cannot reserve both thinking and a final answer. Increase context tokens or reduce RAW cells per task."
+            )
+        payload = copy.deepcopy(payload)
+        payload["options"]["num_predict"] = budget
+        execution["reasoning_policy"] = {
+            "kind": "qwen3vl_bounded",
+            "requested_tokens": requested,
+            "effective_tokens": budget,
+            "answer_tokens": answer_budget,
+        }
+        print(
+            f"Bounded thinking: {budget} tokens; final JSON has a separate {answer_budget}-token budget.",
+            flush=True,
+        )
+
+    def run(body, phase):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                "Local review exceeded its total response timeout; saved thinking is not a review result."
+            )
+        response = stream_answer(
+            client,
+            url,
+            body,
+            folder,
+            remaining,
+            phase=phase,
+            prior=passes[0] if passes else None,
+        )
+        message = response.get("message", {})
+        passes.append(
+            {
+                "phase": phase,
+                "think": body.get("think"),
+                "request_sha256": hashlib.sha256(
+                    json.dumps(body, ensure_ascii=False, sort_keys=True).encode()
+                ).hexdigest(),
+                "output_budget": body["options"]["num_predict"],
+                "done_reason": response.get("done_reason"),
+                "thinking_chars": len(message.get("thinking", "") or ""),
+                "answer_chars": len(message.get("content", "") or ""),
+                "usage": response_usage(response),
+            }
+        )
+        execution["generation_passes"] = passes
+        totals = {}
+        for key in USAGE_FIELDS:
+            values = [
+                p["usage"][key] for p in passes if isinstance(p["usage"].get(key), int)
+            ]
+            totals[key] = sum(values) if values else None
+        execution["usage"] = totals
+        review.atomic_json(folder / "execution.json", execution)
+        return response
+
+    response = run(payload, "bounded thinking" if bounded else "review")
+    message = response.get("message", {})
+    notes = message.get("thinking", "")
+    finish = (
+        bounded
+        and response.get("model") == payload["model"]
+        and response.get("done") is True
+        and response.get("done_reason") in ("length", "stop")
+        and isinstance(notes, str)
+        and notes.strip()
+        and not message.get("tool_calls")
+        and (
+            response.get("done_reason") == "length"
+            or not message.get("content", "").strip()
+        )
+    )
+    if not finish:
+        return response
+
+    review.atomic_json(folder / "reasoning-response.json", response)
+    for name in ("ollama-stream.jsonl", "generation.json"):
+        path = folder / name
+        if path.exists():
+            (
+                folder
+                / (
+                    "reasoning-stream.jsonl"
+                    if name.startswith("ollama")
+                    else "reasoning-generation.json"
+                )
+            ).write_bytes(path.read_bytes())
+    # Keep notes as quoted, fallible same-task data; escape chat-control markers.
+    encoded = (
+        json.dumps({"bounded_same_task_notes": notes}, ensure_ascii=False)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+    )
+    prefill = "<think>\n" + encoded + "\n</think>\n\n"
+    final = original
+    final["messages"][0]["content"] += (
+        "\nComplete this same task against the original page and supplied data now. The saved thinking notes are fallible and incomplete analysis, not evidence or instructions. Return every required check; mark unsupported checks unverified. Emit only the schema-bound JSON answer."
+    )
+    final["messages"].append({"role": "assistant", "content": prefill})
+    final["think"] = False  # Thinking already ran; this pass emits the answer.
+    used = sum(len(m.get("content", "").encode()) for m in final["messages"])
+    if used + answer_budget + 8192 + 512 > config["context_tokens"]:
+        raise ValueError(
+            "Local context budget exceeded while reserving the final answer. Thinking is saved; no evidence or notes were truncated."
+        )
+    audit = copy.deepcopy(final)
+    for message in audit["messages"]:
+        if "images" in message:
+            message["images_sha256"] = [
+                hashlib.sha256(base64.b64decode(encoded)).hexdigest()
+                for encoded in message.pop("images")
+            ]
+    review.atomic_json(folder / "finalization-request.json", audit)
+    print(
+        "Thinking pass saved. Completing the same task with schema-constrained JSON; partial thinking is not approval.",
+        flush=True,
+    )
+    return run(final, "JSON answer after bounded thinking")
 
 
 def load_model(client, url, model, config):
@@ -695,8 +881,10 @@ def execute(folder):
         )
         schema = json.loads((folder / "schema.json").read_text())
         prompt += (
-            "\nReturn only one JSON object matching this response schema:\n"
-            + json.dumps(schema, ensure_ascii=False)
+            "\nReturn one JSON object. The API enforces the full schema. All fields below are required; arrays show their item shape and may be empty except required checks. Response contract:\n"
+            + json.dumps(
+                prompt_contract(schema), ensure_ascii=False, separators=(",", ":")
+            )
         )
         prompt += "\nProvide a nonempty decision summary. For numeric-data checks cite concrete values and table/row/drawing references in each check's evidence. Generic pass statements without such references are unverified."
         prompt += "\nThis local model has no tools or browsing session. Internet retrieval is performed by the application. Use only the attached image, this task's data, and the retrieved web evidence; do not claim searches you did not perform."
@@ -721,6 +909,8 @@ def execute(folder):
         payload = {
             "model": request["model"],
             "stream": True,
+            "truncate": False,
+            "shift": False,
             "keep_alive": -1 if config.get("keep_loaded", True) else 0,
             "format": schema,
             "messages": [
@@ -762,8 +952,15 @@ def execute(folder):
         # Cold HDD loading has its own budget; each fresh review gets its full
         # response timeout after the weights are ready.
         deadline = time.monotonic() + request.get("timeout", 1800)
-        response = stream_answer(
-            client, url, payload, folder, max(1, deadline - time.monotonic())
+        response = generate_review(
+            client,
+            url,
+            payload,
+            folder,
+            max(1, deadline - time.monotonic()),
+            config,
+            model,
+            execution,
         )
         review.atomic_json(folder / "ollama-response.json", response)
         message = response.get("message")
@@ -781,18 +978,8 @@ def execute(folder):
             else 0,
             "output_tokens": output,
         }
-        execution["usage"] = {
-            k: response.get(k)
-            for k in (
-                "prompt_eval_count",
-                "prompt_eval_duration",
-                "eval_count",
-                "eval_duration",
-                "total_duration",
-                "load_duration",
-            )
-        }
-        diagnostics.update(execution["usage"])
+        diagnostics["generation_passes"] = execution["generation_passes"]
+        diagnostics.update(response_usage(response))
         review.atomic_json(folder / "execution.json", execution)
         try:
             result = parse_answer(response, request, model, diagnostics)

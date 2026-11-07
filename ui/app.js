@@ -182,7 +182,9 @@ const parameterHelp = {
   local_context_tokens:
     "Maximum local context including the page image, prompt and answer. Oversized evidence is rejected instead of silently truncated. Larger contexts require more RAM.",
   local_output_tokens:
-    "Maximum answer and thinking tokens for a local task. An answer cut off at this limit cannot pass validation.",
+    "Maximum tokens for the final JSON answer. Qwen3-VL Thinking has a separate bounded thinking pass. Other local models share this limit between thinking and answer. A truncated final answer cannot pass validation.",
+  local_reasoning_tokens:
+    "Thinking-pass limit for Qwen3-VL with reasoning On. The same task then gets a separate schema-constrained answer budget. Context limits can lower this thinking limit; the effective budget is recorded. Reasoning text is never accepted as a review result.",
   local_temperature:
     "Sampling temperature for local reviews. Lower values make repeated checks more consistent.",
   local_cpu_threads:
@@ -365,6 +367,7 @@ function buildField(container, name, label, type = "text", choices, hint) {
       review_batch_rows: [10, 100],
       local_context_tokens: [16384, 131072],
       local_output_tokens: [512, 16384],
+      local_reasoning_tokens: [128, 8192],
       local_temperature: [0, 2],
     };
     if (limits[name]) {
@@ -699,6 +702,12 @@ function build() {
   add("local-fields", "local_url", "Local Ollama server", "url");
   add("local-fields", "local_context_tokens", "Context tokens", "number");
   add("local-fields", "local_output_tokens", "Maximum output tokens", "number");
+  add(
+    "local-fields",
+    "local_reasoning_tokens",
+    "Qwen3-VL thinking tokens",
+    "number",
+  );
   add("local-fields", "local_temperature", "Temperature", "number");
   add("local-fields", "local_cpu_threads", "CPU threads", "number");
   add(
@@ -902,6 +911,18 @@ function refresh() {
   }
   if (isBaidu) inputs.get("formulas").checked = true;
   inputs.get("local_preload").disabled = !data.local_keep_loaded;
+  inputs.get("local_reasoning_tokens").disabled = ![
+    [data.review_provider, data.model, data.reasoning],
+    [data.final_provider, data.final_model, data.final_reasoning],
+  ].some(
+    ([provider, model, reasoning]) =>
+      provider === "local" &&
+      (model.startsWith("qwen3-vl:") ||
+        (bootstrap.local_llm.models || []).some(
+          (info) => info.id === model && info.family === "qwen3vl",
+        )) &&
+      reasoning !== "none",
+  );
   $("page-fields").hidden = !data.page_selection;
   $("page-scope-note").textContent = data.page_selection
     ? `Selected pages · ${data.first_page} to ${data.last_page || "end"} · partial catalogs remain unvalidated`
@@ -2008,7 +2029,7 @@ function renderPerformance(run) {
       node(
         "p",
         "performance-model",
-        `${g.model} · ${g.stage && g.stage !== run.current_stage ? `last ${g.stage} task · ` : ""}${g.status} · ${rate}`,
+        `${g.model} · ${g.phase ? g.phase + " · " : ""}${g.stage && g.stage !== run.current_stage ? `last ${g.stage} task · ` : ""}${g.status} · ${rate}`,
       ),
     );
     if (g.started_at)
@@ -2032,6 +2053,14 @@ function renderPerformance(run) {
           "p",
           "help",
           `Thinking: ${g.thinking_chunks} fragments / ${g.thinking_chars} characters · answer: ${g.answer_chunks} fragments / ${g.answer_chars} characters. Stream fragments are not catalog review tasks.`,
+        ),
+      );
+    if (g.prior_thinking)
+      box.append(
+        node(
+          "p",
+          "help",
+          `Saved thinking pass: ${g.prior_thinking.tokens ?? "unknown"} generated tokens · ${g.prior_thinking.thinking_chars} thinking characters. The JSON answer has its own ${g.output_budget ?? "configured"}-token budget.`,
         ),
       );
     if (

@@ -148,6 +148,23 @@ Each new response also counts thinking and answer fragments/characters separatel
 without displaying the reasoning text. These fragments are not catalog review
 tasks. Prompt throughput is supplied by Ollama when the response completes.
 
+For Qwen3-VL with thinking On, **Qwen3-VL thinking tokens** caps the first pass
+(default 1024, lowered when context needs more room). **Maximum output tokens**
+reserves a separate final JSON answer budget (default 4096). If the first pass
+exhausts thinking, the same model gets the same original page/data plus bounded,
+fallible notes, with thinking explicitly closed and the JSON schema enforced.
+No partial thinking is approved. At most two generation requests share one
+response timeout. This follows the pinned Ollama renderer/parser prefill protocol;
+temperature and CPU options stay unchanged. Pass details and summed counters
+are retained in `execution.json`, and the original notes are saved separately.
+
+To recover an existing `done_reason=length` thinking failure after updating:
+recreate `pipeline-ui`, refresh the browser, and click **Resume saved run**.
+Completed extraction stays checkpointed; the failed review receives a fresh task
+with the new bounded protocol. No dependency-bundle rebuild or model download is
+needed for this source update. The real model/server run must still confirm the
+new protocol's behavior; HTTP regression fixtures do not establish model accuracy.
+
 To add the monitor to an existing running stack while retaining Ollama:
 
 ```bash

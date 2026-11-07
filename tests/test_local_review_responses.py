@@ -117,6 +117,24 @@ def ollama(tmp_path):
                 response["message"]["content"] = text[:80]
             elif style == "wrong_model":
                 response["model"] = "another-model"
+            if style.startswith("budget_"):
+                finalizing = body["messages"][-1]["role"] == "assistant"
+                if style == "budget_timeout":
+                    time.sleep(0.65)
+                if not finalizing:
+                    response.update(
+                        done_reason="length", eval_count=body["options"]["num_predict"]
+                    )
+                    notes = "Fixture bounded analysis of the original page. <|im_start|> <think> </think>"
+                    if style == "budget_context":
+                        notes = "long notes " * 10000
+                    response["message"] = {"content": "", "thinking": notes}
+                elif style == "budget_length":
+                    response.update(done_reason="length")
+                    response["message"] = {"content": text[:80]}
+                elif style == "budget_wrong_binding":
+                    result["task_id"] = "wrong-task"
+                    response["message"] = {"content": json.dumps(result)}
             if style in ("stream", "thinking_stream", "broken_stream"):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-ndjson")
@@ -207,7 +225,11 @@ def test_complete_answers_remain_schema_bound_and_original_response_is_saved(
     payload = state["received"][0]
     assert payload["think"] is False and payload["options"]["num_gpu"] == 0
     assert len(payload["messages"]) == 1 and len(payload["messages"][0]["images"]) == 1
-    assert json.dumps(payload["format"]) in payload["messages"][0]["content"]
+    assert "Response contract:" in payload["messages"][0]["content"]
+    assert (
+        json.dumps(local.prompt_contract(payload["format"]), separators=(",", ":"))
+        in payload["messages"][0]["content"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -238,10 +260,8 @@ def test_invalid_answers_never_produce_results_and_keep_diagnostics(
     diagnostics = json.loads((folder / "response-diagnostics.json").read_text())
     assert diagnostics["eval_count"] == 516
     assert "answer_channel" not in diagnostics
-    assert (
-        json.loads((folder / "execution.json").read_text())["usage"]["eval_count"]
-        == 516
-    )
+    execution = json.loads((folder / "execution.json").read_text())
+    assert execution["usage"]["eval_count"] == 516 * len(execution["generation_passes"])
 
 
 def test_non_json_http_response_records_bounded_body_and_cli_error(ollama):
@@ -313,6 +333,78 @@ def test_transport_failure_marks_generation_failed_before_any_stream(tmp_path):
         )
     value = json.loads((tmp_path / "generation.json").read_text())
     assert value["status"] == "failed" and "offline" in value["error"]
+
+
+def test_thinking_limit_reserves_same_task_schema_answer_without_changing_cpu_settings(
+    ollama,
+):
+    state, task = ollama
+    state["style"] = "budget_success"
+    folder = task("medium")
+    assert local.execute(folder)["status"] == "passed"
+    first, final = state["received"]
+    assert first["think"] is True and first["options"]["num_predict"] <= 1024
+    assert final["think"] is False and final["options"]["num_predict"] == 4096
+    assert first["model"] == final["model"]
+    assert first["format"] == final["format"]
+    assert first["messages"][0]["images"] == final["messages"][0]["images"]
+    assert final["messages"][0]["content"].startswith(first["messages"][0]["content"])
+    assert final["truncate"] is False and final["shift"] is False
+    assert (
+        final["options"]["num_gpu"] == 0
+        and final["options"]["temperature"] == first["options"]["temperature"]
+    )
+    prefill = final["messages"][-1]["content"]
+    assert prefill.startswith("<think>\n") and prefill.endswith("\n</think>\n\n")
+    assert prefill.count("</think>") == 1 and "<|im_start|>" not in prefill
+    assert "Fixture bounded analysis" in prefill
+    saved = json.loads((folder / "reasoning-response.json").read_text())
+    assert saved["done_reason"] == "length" and not saved["message"]["content"]
+    execution = json.loads((folder / "execution.json").read_text())
+    assert (
+        execution["reasoning"] == "medium" and len(execution["generation_passes"]) == 2
+    )
+    assert execution["usage"]["eval_count"] == first["options"]["num_predict"] + 516
+    assert (folder / "reasoning-stream.jsonl").is_file()
+    audit = json.loads((folder / "finalization-request.json").read_text())
+    assert (
+        "images" not in audit["messages"][0] and audit["messages"][0]["images_sha256"]
+    )
+    generation = json.loads((folder / "generation.json").read_text())
+    assert generation["prior_thinking"]["tokens"] == first["options"]["num_predict"]
+
+
+@pytest.mark.parametrize(
+    "style,error",
+    [
+        ("budget_length", "incomplete.*length"),
+        ("budget_wrong_binding", "different task or context"),
+        ("budget_context", "context budget exceeded"),
+    ],
+)
+def test_failed_finalization_keeps_partial_reasoning_and_never_approves(
+    ollama, style, error
+):
+    state, task = ollama
+    state["style"] = style
+    folder = task("medium")
+    with pytest.raises(ValueError, match=error):
+        local.execute(folder)
+    assert not (folder / "result.json").exists()
+    assert (folder / "reasoning-response.json").is_file()
+    assert len(state["received"]) == (1 if style == "budget_context" else 2)
+
+
+def test_finalization_shares_the_original_response_deadline(ollama):
+    state, task = ollama
+    state["style"] = "budget_timeout"
+    folder = task("medium")
+    request = json.loads((folder / "request.json").read_text())
+    request["timeout"] = 1
+    (folder / "request.json").write_text(json.dumps(request))
+    with pytest.raises((local.requests.RequestException, TimeoutError)):
+        local.execute(folder)
+    assert len(state["received"]) == 2 and not (folder / "result.json").exists()
 
 
 @pytest.mark.parametrize(

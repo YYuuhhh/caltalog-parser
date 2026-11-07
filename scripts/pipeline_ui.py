@@ -141,6 +141,7 @@ class Settings(BaseModel):
         SYSTEM_DEFAULTS["local_context_tokens"], ge=16384, le=131072
     )
     local_output_tokens: int = Field(4096, ge=512, le=16384)
+    local_reasoning_tokens: int = Field(1024, ge=128, le=8192)
     local_use_gpu: Literal[False] = False
     local_keep_loaded: bool = True
     local_preload: bool = True
@@ -227,6 +228,7 @@ class Settings(BaseModel):
             "ram_gb": self.local_ram_gb,
             "context_tokens": self.local_context_tokens,
             "output_tokens": self.local_output_tokens,
+            "reasoning_tokens": self.local_reasoning_tokens,
             "use_gpu": self.local_use_gpu,
             "keep_loaded": self.local_keep_loaded,
             "load_timeout": self.local_load_timeout,
@@ -2328,6 +2330,7 @@ def catalog_technical(state):
             for key in (
                 "local_context_tokens",
                 "local_output_tokens",
+                "local_reasoning_tokens",
                 "local_cpu_threads",
                 "local_temperature",
                 "review_dpi",

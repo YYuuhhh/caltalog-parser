@@ -78,8 +78,15 @@ const base = process.env.PIPELINE_UI_URL || "http://127.0.0.1:17861";
       tokens_estimated: false,
       prompt_tokens_per_second: 12,
       first_token_seconds: 45,
-      thinking_chunks: 10,
-      thinking_chars: 100,
+      phase: "JSON answer after bounded thinking",
+      output_budget: 4096,
+      prior_thinking: {
+        tokens: 1024,
+        thinking_chars: 3200,
+        output_budget: 1024,
+      },
+      thinking_chunks: 0,
+      thinking_chars: 0,
       answer_chunks: 5,
       answer_chars: 50,
     },
@@ -188,7 +195,19 @@ const base = process.env.PIPELINE_UI_URL || "http://127.0.0.1:17861";
     );
     assert.match(
       await page.locator("#performance-status").textContent(),
-      /Thinking: 10 fragments \/ 100 characters · answer: 5 fragments \/ 50 characters/,
+      /Thinking: 0 fragments \/ 0 characters · answer: 5 fragments \/ 50 characters/,
+    );
+    assert.match(
+      await page.locator("#performance-status").textContent(),
+      /Saved thinking pass: 1024 generated tokens/,
+    );
+    assert.match(
+      await page.locator("#performance-status").textContent(),
+      /JSON answer has its own 4096-token budget/,
+    );
+    assert.equal(
+      await page.locator("input[name=local_reasoning_tokens]").inputValue(),
+      "1024",
     );
     await page.locator("#performance-status summary").click();
     run.performance.current.cpu_percent = 84;
