@@ -351,6 +351,72 @@ def test_manufacturer_scopes_target_and_persistent_mapping(workspace):
     assert len(lib.catalogs()) == 2
 
 
+@pytest.mark.parametrize(
+    "old_url,old_tokens,threads",
+    [
+        ("", None, None),
+        (None, "", ""),
+        ("http://baidu-ocr:8095", 2048, 0),
+        ("http://127.0.0.1:8095", 4096, 6),
+    ],
+)
+def test_batch_accepts_legacy_settings_without_null_model_parameters(
+    workspace, monkeypatch, old_url, old_tokens, threads
+):
+    _, source, client = workspace
+    seen = []
+    monkeypatch.setattr(
+        ui.jobs,
+        "start_many",
+        lambda configs: seen.extend(configs) or [{"id": "a" * 32}],
+    )
+    body = config(source).model_dump()
+    body.pop("baidu_url")
+    body.pop("baidu_output_tokens")
+    body.update(
+        ocr_check_model="none",
+        ocr_check_url=old_url,
+        ocr_check_tokens=old_tokens,
+        local_cpu_threads=threads,
+    )
+    response = client.post("/api/batches", json={"catalogs": [body]})
+    assert response.status_code == 202, response.text
+    saved = seen[0].model_dump()
+    assert saved["baidu_url"] == (
+        old_url or ui.Settings.model_fields["baidu_url"].default
+    )
+    assert saved["baidu_output_tokens"] == (
+        old_tokens or ui.Settings.model_fields["baidu_output_tokens"].default
+    )
+    assert saved["local_cpu_threads"] == (
+        ui.SYSTEM_DEFAULTS["local_cpu_threads"] if threads in (None, "") else threads
+    )
+    assert not {"ocr_check_model", "ocr_check_url", "ocr_check_tokens"} & saved.keys()
+    assert (
+        client.post(
+            "/api/batches", json={"catalogs": [{**body, "unknown_option": True}]}
+        ).status_code
+        == 422
+    )
+    assert len(seen) == 1
+
+
+def test_current_ocr_settings_take_precedence_and_bootstrap_is_not_cached(workspace):
+    _, source, client = workspace
+    settings = config(
+        source,
+        ocr_check_url="http://127.0.0.1:8095",
+        ocr_check_tokens=4096,
+        baidu_url="http://baidu-ocr:8095",
+        baidu_output_tokens=2048,
+    )
+    assert (
+        settings.baidu_url == "http://baidu-ocr:8095"
+        and settings.baidu_output_tokens == 2048
+    )
+    assert client.get("/api/bootstrap").headers["cache-control"] == "no-store"
+
+
 def test_serial_queue_batch_validation_cancel_and_restart(workspace, monkeypatch):
     _, source, client = workspace
     entered, release = threading.Event(), threading.Event()

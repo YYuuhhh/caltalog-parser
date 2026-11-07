@@ -161,7 +161,7 @@ class Settings(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def legacy_ocr_settings(cls, value):
+    def compatible_settings(cls, value):
         if isinstance(value, dict):
             value = dict(value)
             value.pop("ocr_check_model", None)
@@ -170,7 +170,12 @@ class Settings(BaseModel):
                 ("ocr_check_tokens", "baidu_output_tokens"),
             ):
                 if old in value:
-                    value.setdefault(new, value.pop(old))
+                    previous = value.pop(old)
+                    if previous not in (None, ""):
+                        value.setdefault(new, previous)
+            for name in ("local_cpu_threads", "baidu_url", "baidu_output_tokens"):
+                if name in value and value[name] in (None, ""):
+                    value.pop(name)
         return value
 
     @model_validator(mode="after")
@@ -2064,6 +2069,10 @@ async def same_origin(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "same-origin"
+    if request.url.path in ("/", "/api/bootstrap") or request.url.path.startswith(
+        "/assets/"
+    ):
+        response.headers["Cache-Control"] = "no-store"
     return response
 
 

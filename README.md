@@ -30,6 +30,18 @@ and `deploy/server/.env.example`. Set `PIPELINE_UI_BIND=0.0.0.0` and
 `PIPELINE_UI_PORT=7777` on that server. Local development defaults to
 `127.0.0.1:7861`; the UI container continues listening on its internal port 7861.
 
+For UI/Python source updates, pull and recreate the UI process together. These
+folders are bind mounted: static assets change immediately, while Python keeps
+the old request schema until restarted. A mixed deployment now shows a version
+mismatch message instead of submitting incompatible catalog settings.
+
+```bash
+git pull --ff-only
+sudo docker compose up -d --no-build --pull never --force-recreate pipeline-ui
+```
+
+Reload the browser afterward. This source update uses the existing images and model weights.
+
 Run `make ui` after changing the folder. It is mounted **read-only** at `/catalogs/imports/guhring` in the UI, CPU extractor and tools container. The source picker lists PDFs recursively with a **Windows · GUHRING** label. When present, `GTC_Milling_Cutters 2018.pdf` from this folder is selected initially; other catalogs stay unselected until chosen. With no configured folder, `catalogs/imports/guhring` is used. Originals are not copied or modified, and listing files does not start parsing.
 
 The default stack contains the CPU extractor, the workbench and a local Ollama server. RAGFlow, GPU parsing, Elasticsearch, MySQL, Redis, MinIO and TEI are not needed by this pipeline.

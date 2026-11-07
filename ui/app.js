@@ -326,6 +326,10 @@ function options(select, manufacturers, current) {
   select.value = current || manufacturers[0]?.id || "";
 }
 function buildField(container, name, label, type = "text", choices, hint) {
+  if (!Object.hasOwn(bootstrap.defaults, name))
+    throw new Error(
+      `The CatalogFlow API and UI are different versions (API setting missing: ${name}). In the server project folder, run git pull --ff-only, then sudo docker compose up -d --no-build --pull never --force-recreate pipeline-ui. Reload this page afterward.`,
+    );
   const isModel = ["model", "final_model"].includes(name);
   const box = node(
     isModel ? "div" : "label",
@@ -344,6 +348,7 @@ function buildField(container, name, label, type = "text", choices, hint) {
   if (type === "checkbox") input.checked = Boolean(value);
   else input.value = value ?? "";
   if (type === "number") {
+    if (value != null) input.placeholder = `Default: ${value}`;
     input.step = ["confidence_threshold", "local_temperature"].includes(name)
       ? ".01"
       : "1";
@@ -386,6 +391,8 @@ function buildField(container, name, label, type = "text", choices, hint) {
 }
 function settings() {
   const data = { ...bootstrap.defaults };
+  for (const name of ["ocr_check_model", "ocr_check_url", "ocr_check_tokens"])
+    delete data[name];
   for (const [name, input] of inputs) {
     data[name] =
       input.type === "range"
@@ -394,7 +401,7 @@ function settings() {
           ? input.checked
           : input.type === "number"
             ? input.value === ""
-              ? null
+              ? (bootstrap.defaults[name] ?? null)
               : Number(input.value)
             : input.value;
   }
@@ -404,8 +411,12 @@ function settings() {
 function applySettings(data) {
   const previousServer = localServerUrl();
   data = { ...data };
-  data.baidu_url ??= data.ocr_check_url;
-  data.baidu_output_tokens ??= data.ocr_check_tokens;
+  for (const [old, name] of [
+    ["ocr_check_url", "baidu_url"],
+    ["ocr_check_tokens", "baidu_output_tokens"],
+  ])
+    if (data[name] == null && data[old] != null && data[old] !== "")
+      data[name] = data[old];
   if (data.model === "chatgpt") data.model = bootstrap.defaults.model;
   if (data.final_model === "chatgpt")
     data.final_model = bootstrap.defaults.final_model;
@@ -419,6 +430,11 @@ function applySettings(data) {
   updateModels(true);
   for (const [name, input] of inputs)
     if (name in data) {
+      if (
+        data[name] == null ||
+        (["number", "url"].includes(input.type) && data[name] === "")
+      )
+        data[name] = bootstrap.defaults[name];
       if (input.type === "range") input.dataset.reasoning = data[name];
       else if (input.type === "checkbox") input.checked = Boolean(data[name]);
       else {
